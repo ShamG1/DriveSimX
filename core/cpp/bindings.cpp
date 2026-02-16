@@ -84,6 +84,8 @@ PYBIND11_MODULE(SIM_MARL_ENV, m) {
         .def("get_state", &ScenarioEnv::get_state)
         .def("set_state", &ScenarioEnv::set_state, py::arg("state"))
         .def("render", &ScenarioEnv::render, py::arg("show_lane_ids") = false, py::arg("show_lidar") = false)
+        .def("set_view_mode", &ScenarioEnv::set_view_mode, py::arg("mode"))
+        .def("get_view_mode", &ScenarioEnv::get_view_mode)
         .def("window_should_close", &ScenarioEnv::window_should_close)
         .def("poll_events", &ScenarioEnv::poll_events)
         .def("key_pressed", &ScenarioEnv::key_pressed, py::arg("glfw_key"));

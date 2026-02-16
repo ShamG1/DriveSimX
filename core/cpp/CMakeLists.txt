@@ -234,6 +234,7 @@ else()
     find_package(glfw3 3.3 REQUIRED)
     target_include_directories(SIM_MARL_ENV PUBLIC 
     ${CMAKE_CURRENT_SOURCE_DIR} 
+    ${CMAKE_CURRENT_SOURCE_DIR}/third_party
     ${IMGUI_DIR}
     ${IMGUI_DIR}/backends
 )

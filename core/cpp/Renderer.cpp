@@ -29,8 +29,120 @@
 #include <stdexcept>
 #include <cstring>
 
+#include <fstream>
+#include <sstream>
+
+struct ObjMesh {
+    struct Vertex { float x, y, z; };
+    struct Face { int v[3]; };
+    std::vector<Vertex> vertices;
+    std::vector<Vertex> vert_normals; // Smooth normals per vertex
+    std::vector<Face> faces;
+    float center_x{0.0f}, center_y{0.0f}, center_z{0.0f};
+    float scale{1.0f};
+
+    bool load(const std::string& path) {
+        std::ifstream f(path);
+        if (!f.is_open()) return false;
+        vertices.clear(); faces.clear(); vert_normals.clear();
+        std::string line;
+        while (std::getline(f, line)) {
+            if (line.substr(0, 2) == "v ") {
+                std::istringstream s(line.substr(2));
+                Vertex v; s >> v.x >> v.y >> v.z;
+                vertices.push_back(v);
+            } else if (line.substr(0, 2) == "f ") {
+                std::istringstream s(line.substr(2));
+                std::vector<int> face_indices;
+                std::string v_str;
+                while (s >> v_str) {
+                    try {
+                        size_t first_slash = v_str.find('/');
+                        int idx = std::stoi(v_str.substr(0, first_slash));
+                        face_indices.push_back(idx > 0 ? idx - 1 : (int)vertices.size() + idx);
+                    } catch (...) {}
+                }
+                for (size_t i = 1; i + 1 < face_indices.size(); ++i) {
+                    faces.push_back({{face_indices[0], face_indices[i], face_indices[i+1]}});
+                }
+            }
+        }
+        if (vertices.empty()) return false;
+
+        // Compute BBox and Center
+        float min_x = 1e9, max_x = -1e9, min_y = 1e9, max_y = -1e9, min_z = 1e9, max_z = -1e9;
+        for (const auto& v : vertices) {
+            min_x = std::min(min_x, v.x); max_x = std::max(max_x, v.x);
+            min_y = std::min(min_y, v.y); max_y = std::max(max_y, v.y);
+            min_z = std::min(min_z, v.z); max_z = std::max(max_z, v.z);
+        }
+        center_x = (min_x + max_x) * 0.5f;
+        center_y = min_y; 
+        center_z = (min_z + max_z) * 0.5f;
+
+        float size_z = max_z - min_z;
+        scale = CAR_LENGTH / (size_z > 0.1f ? size_z : 1.0f);
+
+        // Compute Smooth Vert Normals
+        vert_normals.assign(vertices.size(), {0, 0, 0});
+        for (const auto& f : faces) {
+            const auto& v0 = vertices[f.v[0]], v1 = vertices[f.v[1]], v2 = vertices[f.v[2]];
+            float ax = v1.x - v0.x, ay = v1.y - v0.y, az = v1.z - v0.z;
+            float bx = v2.x - v0.x, by = v2.y - v0.y, bz = v2.z - v0.z;
+            float nx = ay * bz - az * by, ny = az * bx - ax * bz, nz = ax * by - ay * bx;
+            for (int i = 0; i < 3; ++i) {
+                vert_normals[f.v[i]].x += nx; vert_normals[f.v[i]].y += ny; vert_normals[f.v[i]].z += nz;
+            }
+        }
+        for (auto& n : vert_normals) {
+            float len = std::sqrt(n.x*n.x + n.y*n.y + n.z*n.z);
+            if (len > 1e-6f) { n.x /= len; n.y /= len; n.z /= len; }
+        }
+        return true;
+    }
+
+    void draw() const {
+        glBegin(GL_TRIANGLES);
+        for (const auto& f : faces) {
+            for (int i = 0; i < 3; ++i) {
+                const auto& n = vert_normals[f.v[i]];
+                glNormal3f(n.x, n.y, n.z);
+                const auto& v = vertices[f.v[i]];
+                glVertex3f(v.x - center_x, v.y - center_y, v.z - center_z);
+            }
+        }
+        glEnd();
+    }
+};
+
 struct Renderer::Impl {
     GLFWwindow* window{nullptr};
+    ObjMesh mesh_ego;
+    ObjMesh mesh_npc;
+    bool meshes_loaded{false};
+
+
+    // Mouse input
+    double mouse_x{0.0};
+    double mouse_y{0.0};
+    double last_mouse_x{0.0};
+    double last_mouse_y{0.0};
+    bool mouse_left_down{false};
+    bool mouse_right_down{false};
+    double scroll_y{0.0};
+
+    // Camera params (3D_TOP)
+    float top_yaw{0.0f};
+    float top_pitch{0.85f};
+    float top_dist{900.0f};
+    float top_center_x{WIDTH * 0.5f};
+    float top_center_z{HEIGHT * 0.5f};
+
+    // Camera params (3D_FOLLOW)
+    float follow_yaw{0.0f};
+    float follow_pitch{0.5f};
+    float follow_dist{120.0f};
+
 #ifdef _WIN32
     HWND hwnd{nullptr};
     HDC hdc{nullptr};
@@ -48,6 +160,8 @@ struct Renderer::Impl {
     float v_min_y{0.0f};
     float v_max_y{(float)HEIGHT};
 
+    int view_mode{0}; // 0=2D, 1=3D
+
     // Bitmap background texture cache
     bool bg_tex_valid{false};
     GLuint bg_tex{0};
@@ -55,7 +169,44 @@ struct Renderer::Impl {
     int bg_h{0};
 };
 
-// Helper for dynamic NDC mapping based on a view box
+// Helper for 3D perspective matrix (equivalent to gluPerspective)
+static void setup_perspective(float fov_deg, float aspect, float znear, float zfar) {
+    float f = 1.0f / std::tan(fov_deg * 3.14159265f / 360.0f);
+    float m[16] = {
+        f / aspect, 0, 0, 0,
+        0, f, 0, 0,
+        0, 0, (zfar + znear) / (znear - zfar), -1,
+        0, 0, (2.0f * zfar * znear) / (znear - zfar), 0
+    };
+    glLoadMatrixf(m);
+}
+
+// Simple LookAt implementation
+static void setup_lookat(float eyex, float eyey, float eyez,
+                         float centerx, float centery, float centerz,
+                         float upx, float upy, float upz) {
+    float f[3] = { centerx - eyex, centery - eyey, centerz - eyez };
+    float len = std::sqrt(f[0]*f[0] + f[1]*f[1] + f[2]*f[2]);
+    f[0] /= len; f[1] /= len; f[2] /= len;
+
+    float up[3] = { upx, upy, upz };
+    float s[3] = { f[1]*up[2] - f[2]*up[1], f[2]*up[0] - f[0]*up[2], f[0]*up[1] - f[1]*up[0] };
+    len = std::sqrt(s[0]*s[0] + s[1]*s[1] + s[2]*s[2]);
+    s[0] /= len; s[1] /= len; s[2] /= len;
+
+    float u[3] = { s[1]*f[2] - s[2]*f[1], s[2]*f[0] - s[0]*f[2], s[0]*f[1] - s[1]*f[0] };
+
+    float m[16] = {
+        s[0], u[0], -f[0], 0,
+        s[1], u[1], -f[1], 0,
+        s[2], u[2], -f[2], 0,
+        0, 0, 0, 1
+    };
+    glMultMatrixf(m);
+    glTranslatef(-eyex, -eyey, -eyez);
+}
+
+// Helper for dynamic NDC mapping based on a view box (used for 2D mode)
 static inline float ndc_x(float px, float min_x, float max_x) {
     float range = max_x - min_x;
     if (range < 1e-3f) range = 1.0f;
@@ -111,6 +262,19 @@ Renderer::Renderer() {
     if(!init_glfw()) return;
     impl = std::make_unique<Impl>();
     imgui = std::make_unique<ImGuiOverlay>();
+
+    // Load OBJ models
+    std::string assets_dir = std::string(CPP_ASSETS_DIR) + "/";
+#ifdef _WIN32
+    std::replace(assets_dir.begin(), assets_dir.end(), '/', '\\');
+#endif
+    if (impl->mesh_ego.load(assets_dir + "NormalCar1.obj") &&
+        impl->mesh_npc.load(assets_dir + "NormalCar2.obj")) {
+        impl->meshes_loaded = true;
+    } else {
+        std::cerr << "[Renderer] Warning: Failed to load car OBJ models from " << assets_dir << std::endl;
+    }
+
     // We use immediate-mode OpenGL (glBegin/glEnd). Core profile removes these APIs,
     // so we must request a COMPAT profile.
     glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 2);
@@ -168,6 +332,11 @@ Renderer::Renderer() {
 #endif
 
     glfwMakeContextCurrent(impl->window);
+
+    glfwSetWindowUserPointer(impl->window, this);
+    glfwSetScrollCallback(impl->window, &Renderer::scroll_callback);
+    glfwSetCursorPosCallback(impl->window, &Renderer::cursor_pos_callback);
+    glfwSetMouseButtonCallback(impl->window, &Renderer::mouse_button_callback);
     glfwSwapInterval(1);
 
     if (imgui) {
@@ -175,6 +344,7 @@ Renderer::Renderer() {
     }
     // No GLAD in this build: using immediate-mode OpenGL functions provided via system GL headers.
     glDisable(GL_DEPTH_TEST);
+    glDisable(GL_LIGHTING);
     glEnable(GL_BLEND);
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 
@@ -259,6 +429,47 @@ bool Renderer::init_glfw(){
     return true;
 }
 
+void Renderer::set_view_mode(int mode) {
+    if (impl) impl->view_mode = mode;
+}
+
+int Renderer::get_view_mode() const {
+    return impl ? impl->view_mode : 0;
+}
+
+void Renderer::scroll_callback(GLFWwindow* window, double, double yoffset) {
+    if (!window) return;
+    auto* self = static_cast<Renderer*>(glfwGetWindowUserPointer(window));
+    if (!self || !self->impl) return;
+    self->impl->scroll_y += yoffset;
+}
+
+void Renderer::cursor_pos_callback(GLFWwindow* window, double xpos, double ypos) {
+    if (!window) return;
+    auto* self = static_cast<Renderer*>(glfwGetWindowUserPointer(window));
+    if (!self || !self->impl) return;
+    self->impl->mouse_x = xpos;
+    self->impl->mouse_y = ypos;
+}
+
+void Renderer::mouse_button_callback(GLFWwindow* window, int button, int action, int) {
+    if (!window) return;
+    auto* self = static_cast<Renderer*>(glfwGetWindowUserPointer(window));
+    if (!self || !self->impl) return;
+
+    if (button == GLFW_MOUSE_BUTTON_LEFT) {
+        self->impl->mouse_left_down = (action == GLFW_PRESS);
+    } else if (button == GLFW_MOUSE_BUTTON_RIGHT) {
+        self->impl->mouse_right_down = (action == GLFW_PRESS);
+    }
+
+    // Reset drag origin on press
+    if (action == GLFW_PRESS) {
+        self->impl->last_mouse_x = self->impl->mouse_x;
+        self->impl->last_mouse_y = self->impl->mouse_y;
+    }
+}
+
 bool Renderer::window_should_close() const {
     if(!impl || !impl->window) return true;
     return glfwWindowShouldClose(impl->window) != 0;
@@ -318,8 +529,8 @@ void Renderer::draw_bitmap_background(const ScenarioEnv& env) const {
 
         glGenTextures(1, &impl->bg_tex);
         glBindTexture(GL_TEXTURE_2D, impl->bg_tex);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP);
 
@@ -345,18 +556,39 @@ void Renderer::draw_bitmap_background(const ScenarioEnv& env) const {
     glBindTexture(GL_TEXTURE_2D, impl->bg_tex);
     glColor4f(1.0f, 1.0f, 1.0f, 1.0f);
 
-    // Map the view box to the texture coordinates
-    float tx0 = impl->v_min_x / (float)WIDTH;
-    float ty0 = 1.0f - impl->v_max_y / (float)HEIGHT; // Flip Y for OpenGL
-    float tx1 = impl->v_max_x / (float)WIDTH;
-    float ty1 = 1.0f - impl->v_min_y / (float)HEIGHT;
+    if (impl->view_mode == VIEW_2D) {
+        // Map the view box to the texture coordinates
+        float tx0 = impl->v_min_x / (float)WIDTH;
+        float ty0 = 1.0f - impl->v_max_y / (float)HEIGHT; // Flip Y for OpenGL
+        float tx1 = impl->v_max_x / (float)WIDTH;
+        float ty1 = 1.0f - impl->v_min_y / (float)HEIGHT;
 
-    glBegin(GL_QUADS);
-    glTexCoord2f(tx0, ty0); glVertex2f(-1.0f, -1.0f);
-    glTexCoord2f(tx1, ty0); glVertex2f( 1.0f, -1.0f);
-    glTexCoord2f(tx1, ty1); glVertex2f( 1.0f,  1.0f);
-    glTexCoord2f(tx0, ty1); glVertex2f(-1.0f,  1.0f);
-    glEnd();
+        glBegin(GL_QUADS);
+        glTexCoord2f(tx0, ty0); glVertex2f(-1.0f, -1.0f);
+        glTexCoord2f(tx1, ty0); glVertex2f( 1.0f, -1.0f);
+        glTexCoord2f(tx1, ty1); glVertex2f( 1.0f,  1.0f);
+        glTexCoord2f(tx0, ty1); glVertex2f(-1.0f,  1.0f);
+        glEnd();
+    } else {
+        // Correct 3D ground: map texture to world coordinates on Y=0 plane
+        // Disable lighting and culling for ground to ensure visibility
+        glDisable(GL_LIGHTING);
+        glDisable(GL_CULL_FACE);
+        glEnable(GL_TEXTURE_2D);
+        glBindTexture(GL_TEXTURE_2D, impl->bg_tex);
+        glColor4f(1.0f, 1.0f, 1.0f, 1.0f);
+
+        // Explicit CCW order for the ground quad
+        glBegin(GL_QUADS);
+        glTexCoord2f(0.0f, 0.0f); glVertex3f(0.0f, -0.5f, 0.0f);
+        glTexCoord2f(1.0f, 0.0f); glVertex3f((float)WIDTH, -0.5f, 0.0f);
+        glTexCoord2f(1.0f, 1.0f); glVertex3f((float)WIDTH, -0.5f, (float)HEIGHT);
+        glTexCoord2f(0.0f, 1.0f); glVertex3f(0.0f, -0.5f, (float)HEIGHT);
+        glEnd();
+
+        glEnable(GL_CULL_FACE);
+        glEnable(GL_LIGHTING);
+    }
 
     glDisable(GL_TEXTURE_2D);
 }
@@ -481,15 +713,118 @@ void Renderer::render(const ScenarioEnv& env, bool show_lane_ids, bool show_lida
     }
 
     glClearColor(0.15f, 0.15f, 0.15f, 1.0f);
-    glClear(GL_COLOR_BUFFER_BIT);
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
     glViewport(vp_x, vp_y, view, view);
 
     glEnable(GL_SCISSOR_TEST);
     glScissor(vp_x, vp_y, view, view);
     glClearColor(RenderColors::Background.r, RenderColors::Background.g, RenderColors::Background.b, RenderColors::Background.a);
-    glClear(GL_COLOR_BUFFER_BIT);
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
     glDisable(GL_SCISSOR_TEST);
+
+    if (impl->view_mode == VIEW_2D) {
+        glMatrixMode(GL_PROJECTION);
+        glLoadIdentity();
+        glMatrixMode(GL_MODELVIEW);
+        glLoadIdentity();
+        glDisable(GL_DEPTH_TEST);
+        glDisable(GL_LIGHTING);
+    } else {
+        glEnable(GL_DEPTH_TEST);
+        glEnable(GL_CULL_FACE);
+        glCullFace(GL_BACK);
+        glEnable(GL_NORMALIZE);
+
+        glEnable(GL_LIGHTING);
+        glEnable(GL_LIGHT0);
+        glEnable(GL_COLOR_MATERIAL);
+        glColorMaterial(GL_FRONT_AND_BACK, GL_AMBIENT_AND_DIFFUSE);
+
+        // Bright / cartoony lighting
+        float light_pos[] = { 0.3f, 1.0f, 0.2f, 0.0f }; // directional
+        glLightfv(GL_LIGHT0, GL_POSITION, light_pos);
+        float light_amb[] = { 0.55f, 0.55f, 0.60f, 1.0f };
+        glLightfv(GL_LIGHT0, GL_AMBIENT, light_amb);
+        float light_diff[] = { 0.95f, 0.95f, 0.95f, 1.0f };
+        glLightfv(GL_LIGHT0, GL_DIFFUSE, light_diff);
+        float light_spec[] = { 0.25f, 0.25f, 0.25f, 1.0f };
+        glLightfv(GL_LIGHT0, GL_SPECULAR, light_spec);
+
+        float mat_spec[] = { 0.20f, 0.20f, 0.20f, 1.0f };
+        glMaterialfv(GL_FRONT_AND_BACK, GL_SPECULAR, mat_spec);
+        glMaterialf(GL_FRONT_AND_BACK, GL_SHININESS, 24.0f);
+
+        glMatrixMode(GL_PROJECTION);
+        setup_perspective(45.0f, 1.0f, 1.0f, 5000.0f);
+        glMatrixMode(GL_MODELVIEW);
+        glLoadIdentity();
+
+        // --- Mouse-driven camera controls (3D) ---
+        double dx = impl->mouse_x - impl->last_mouse_x;
+        double dy = impl->mouse_y - impl->last_mouse_y;
+        impl->last_mouse_x = impl->mouse_x;
+        impl->last_mouse_y = impl->mouse_y;
+
+        // Zoom via scroll wheel
+        if (impl->scroll_y != 0.0) {
+            if (impl->view_mode == VIEW_3D_TOP) {
+                impl->top_dist = std::clamp(impl->top_dist * (float)std::pow(0.9, impl->scroll_y), 200.0f, 4000.0f);
+            } else if (impl->view_mode == VIEW_3D_FOLLOW) {
+                impl->follow_dist = std::clamp(impl->follow_dist * (float)std::pow(0.9, impl->scroll_y), 30.0f, 800.0f);
+            }
+            impl->scroll_y = 0.0;
+        }
+
+        if (impl->view_mode == VIEW_3D_TOP) {
+            // Left drag: pan
+            if (impl->mouse_left_down) {
+                float pan_speed = impl->top_dist * 0.0015f;
+                impl->top_center_x -= (float)dx * pan_speed;
+                impl->top_center_z += (float)dy * pan_speed;
+            }
+            // Right drag: orbit
+            if (impl->mouse_right_down) {
+                impl->top_yaw += (float)dx * 0.005f;
+                impl->top_pitch = std::clamp(impl->top_pitch + (float)dy * 0.005f, 0.15f, 1.45f);
+            }
+
+            float cy = std::cos(impl->top_yaw);
+            float sy = std::sin(impl->top_yaw);
+            float cp = std::cos(impl->top_pitch);
+            float sp = std::sin(impl->top_pitch);
+
+            float ex = impl->top_center_x + impl->top_dist * cp * cy;
+            float ey = impl->top_dist * sp;
+            float ez = impl->top_center_z + impl->top_dist * cp * sy;
+            setup_lookat(ex, ey, ez, impl->top_center_x, 0.0f, impl->top_center_z, 0, 1, 0);
+        } else if (impl->view_mode == VIEW_3D_FOLLOW && !env.cars.empty() && env.cars[0].alive) {
+            const auto& ego = env.cars[0];
+
+            // Right drag: rotate around ego
+            if (impl->mouse_right_down) {
+                impl->follow_yaw += (float)dx * 0.005f;
+                impl->follow_pitch = std::clamp(impl->follow_pitch + (float)dy * 0.005f, 0.05f, 1.2f);
+            }
+
+            float base_yaw = -ego.state.heading;
+            float yaw = base_yaw + impl->follow_yaw;
+            float cy = std::cos(yaw);
+            float sy = std::sin(yaw);
+            float cp = std::cos(impl->follow_pitch);
+            float sp = std::sin(impl->follow_pitch);
+
+            float ex = ego.state.x - impl->follow_dist * cp * cy;
+            float ey = 8.0f + impl->follow_dist * sp;
+            float ez = ego.state.y - impl->follow_dist * cp * sy;
+            setup_lookat(ex, ey, ez, ego.state.x, 3.0f, ego.state.y, 0, 1, 0);
+        } else {
+            // Fallback
+            setup_lookat(WIDTH / 2.0f, 600.0f, HEIGHT / 2.0f + 300.0f,
+                         WIDTH / 2.0f, 0.0f, HEIGHT / 2.0f,
+                         0, 1, 0);
+        }
+    }
 
     if (env.use_bitmap_scenario) {
         draw_bitmap_background(env);
@@ -810,49 +1145,92 @@ void Renderer::draw_route(const ScenarioEnv& env) const{
 void Renderer::draw_cars(const ScenarioEnv& env) const{
     auto draw_one=[&](const Car& car, float r,float g,float b, bool npc){
         if(!car.alive) return;
-        float x=car.state.x; float y=car.state.y; float heading=car.state.heading;
-        float len=CAR_LENGTH; float wid=CAR_WIDTH;
+        
+        if (impl->view_mode == VIEW_2D) {
+            float x=car.state.x; float y=car.state.y; float heading=car.state.heading;
+            float len=CAR_LENGTH; float wid=CAR_WIDTH;
+            float hl=len*0.5f; float hw=wid*0.5f;
 
-        float hl=len*0.5f; float hw=wid*0.5f;
+            auto rot=[&](float lx,float ly){
+                float vx = lx * std::cos(-heading) - ly * std::sin(-heading);
+                float vy = lx * std::sin(-heading) + ly * std::cos(-heading);
+                return std::pair<float,float>(x+vx, y+vy);
+            };
 
-        auto rot=[&](float lx,float ly){
-            float vx = lx * std::cos(-heading) - ly * std::sin(-heading);
-            float vy = lx * std::sin(-heading) + ly * std::cos(-heading);
-            return std::pair<float,float>(x+vx, y+vy);
-        };
+            // Body
+            glColor3f(r,g,b);
+            std::array<std::pair<float,float>,4> body={{
+                rot(+hl,+hw), rot(+hl,-hw), rot(-hl,-hw), rot(-hl,+hw)
+            }};
+            glBegin(GL_QUADS);
+            for(const auto& p: body){ 
+                glVertex2f(ndc_x(p.first, impl->v_min_x, impl->v_max_x), 
+                           ndc_y(p.second, impl->v_min_y, impl->v_max_y)); 
+            }
+            glEnd();
 
-        // Body
-        glColor3f(r,g,b);
-        std::array<std::pair<float,float>,4> body={{
-            rot(+hl,+hw), rot(+hl,-hw), rot(-hl,-hw), rot(-hl,+hw)
-        }};
-        glBegin(GL_QUADS);
-        for(const auto& p: body){ 
-            glVertex2f(ndc_x(p.first, impl->v_min_x, impl->v_max_x), 
-                       ndc_y(p.second, impl->v_min_y, impl->v_max_y)); 
+            // Head marker
+            float mr = npc ? RenderColors::TrafficHeadBlack.r : RenderColors::AgentHeadMarker.r;
+            float mg = npc ? RenderColors::TrafficHeadBlack.g : RenderColors::AgentHeadMarker.g;
+            float mb = npc ? RenderColors::TrafficHeadBlack.b : RenderColors::AgentHeadMarker.b;
+            glColor3f(mr,mg,mb);
+
+            float x0 = -hl + 0.70f*len;
+            float x1 = -hl + 0.95f*len;
+            float y0 = -hw + 2.0f;
+            float y1 = +hw - 2.0f;
+
+            std::array<std::pair<float,float>,4> head={{
+                rot(x0,y0), rot(x1,y0), rot(x1,y1), rot(x0,y1)
+            }};
+            glBegin(GL_QUADS);
+            for(const auto& p: head){ 
+                glVertex2f(ndc_x(p.first, impl->v_min_x, impl->v_max_x), 
+                           ndc_y(p.second, impl->v_min_y, impl->v_max_y)); 
+            }
+            glEnd();
+        } else if (impl->meshes_loaded) {
+            // OBJ Model Rendering
+            glPushMatrix();
+            glTranslatef(car.state.x, 0.0f, car.state.y);
+            // Sim heading=0 is +X, Blender OBJ car head is often -Z or +Z.
+            // Rotating -heading (in radians to degrees) + 90 degrees to align +X.
+            glRotatef(car.state.heading * 57.29578f + 90.0f, 0, 1, 0);
+            
+            const auto& mesh = npc ? impl->mesh_npc : impl->mesh_ego;
+            glScalef(mesh.scale, mesh.scale, mesh.scale);
+            
+            glColor3f(r, g, b);
+            mesh.draw();
+            glPopMatrix();
+        } else {
+            // Fallback 3D Box if mesh failed to load
+            float x=car.state.x; float y=car.state.y; float heading=car.state.heading;
+            float len=CAR_LENGTH; float wid=CAR_WIDTH;
+            float hl=len*0.5f; float hw=wid*0.5f;
+
+            auto rot=[&](float lx,float ly){
+                float vx = lx * std::cos(-heading) - ly * std::sin(-heading);
+                float vy = lx * std::sin(-heading) + ly * std::cos(-heading);
+                return std::pair<float,float>(x+vx, y+vy);
+            };
+            std::array<std::pair<float,float>,4> body={{
+                rot(+hl,+hw), rot(+hl,-hw), rot(-hl,-hw), rot(-hl,+hw)
+            }};
+
+            glColor3f(r,g,b);
+            float h = 4.0f;
+            glBegin(GL_QUADS);
+            for(const auto& p: body) glVertex3f(p.first, h, p.second);
+            for(int i=0; i<4; ++i) {
+                int next = (i+1)%4;
+                glVertex3f(body[i].first, 0, body[i].second);
+                glVertex3f(body[next].first, 0, body[next].second);
+                glVertex3f(body[next].first, h, body[next].second);
+                glVertex3f(body[i].first, h, body[i].second);
+            }
+            glEnd();
         }
-        glEnd();
-
-        // Head marker rectangle (matches Scenario/env.py)
-        float mr = npc ? RenderColors::TrafficHeadBlack.r : RenderColors::AgentHeadMarker.r;
-        float mg = npc ? RenderColors::TrafficHeadBlack.g : RenderColors::AgentHeadMarker.g;
-        float mb = npc ? RenderColors::TrafficHeadBlack.b : RenderColors::AgentHeadMarker.b;
-        glColor3f(mr,mg,mb);
-
-        float x0 = -hl + 0.70f*len;
-        float x1 = -hl + 0.95f*len;
-        float y0 = -hw + 2.0f;
-        float y1 = +hw - 2.0f;
-
-        std::array<std::pair<float,float>,4> head={{
-            rot(x0,y0), rot(x1,y0), rot(x1,y1), rot(x0,y1)
-        }};
-        glBegin(GL_QUADS);
-        for(const auto& p: head){ 
-            glVertex2f(ndc_x(p.first, impl->v_min_x, impl->v_max_x), 
-                       ndc_y(p.second, impl->v_min_y, impl->v_max_y)); 
-        }
-        glEnd();
     };
 
     static const std::array<std::array<float,3>,6> colors={{

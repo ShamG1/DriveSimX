@@ -15,6 +15,15 @@ void ScenarioEnv::render(bool show_lane_ids, bool show_lidar){
     }
 }
 
+void ScenarioEnv::set_view_mode(int mode) {
+    if (renderer) renderer->set_view_mode(mode);
+}
+
+int ScenarioEnv::get_view_mode() const {
+    if (!renderer) return 0;
+    return renderer->get_view_mode();
+}
+
 bool ScenarioEnv::window_should_close() const {
     if(!renderer) return true;
     return renderer->window_should_close();

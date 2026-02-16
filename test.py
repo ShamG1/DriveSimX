@@ -16,7 +16,7 @@ from core.env import ScenarioEnv, ROUTE_MAP_BY_SCENARIO
 
 def main():
     config = {
-        'traffic_flow': False,
+        'traffic_flow': True,
         'traffic_density': 1,
         'num_agents': 1,
         'scenario_name': 'bottleneck',
@@ -71,6 +71,7 @@ def main():
     KEY_R = 82
     KEY_L = 76
     KEY_O = 79
+    KEY_V = 86
     KEY_Q = 81
     KEY_ESC = 256
 
@@ -140,6 +141,19 @@ def main():
                 print(f"Ego intention: {ego_intention_label()}")
                 print_obs_snapshot(obs)
             last_toggle_o = now
+
+        if env.env.key_pressed(KEY_V):
+            try:
+                cur = int(env.env.get_view_mode())
+            except Exception:
+                cur = 0
+            nxt = (cur + 1) % 3
+            try:
+                env.env.set_view_mode(int(nxt))
+                print(f"View mode switched: {cur} -> {nxt}")
+            except Exception as e:
+                print(f"Failed to set view mode: {e}")
+            time.sleep(0.15)
 
         if env.env.key_pressed(KEY_ESC) or env.env.key_pressed(KEY_Q):
             running = False

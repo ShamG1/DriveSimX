@@ -5,6 +5,8 @@
 #include <string>
 #include "constants.h"
 
+struct GLFWwindow;
+
 class ImGuiOverlay;
 
 // Forward declaration
@@ -12,8 +14,17 @@ class ScenarioEnv;
 
 class Renderer {
 public:
+    enum ViewMode {
+        VIEW_2D = 0,
+        VIEW_3D_FOLLOW = 1,
+        VIEW_3D_TOP = 2,
+    };
+
     Renderer();
     ~Renderer();
+
+    void set_view_mode(int mode);
+    int get_view_mode() const;
 
     // Disable copy
     Renderer(const Renderer&) = delete;
@@ -51,5 +62,9 @@ private:
     bool initialized{false};
     struct Impl;
     std::unique_ptr<Impl> impl;
+
+    static void scroll_callback(GLFWwindow* window, double xoffset, double yoffset);
+    static void cursor_pos_callback(GLFWwindow* window, double xpos, double ypos);
+    static void mouse_button_callback(GLFWwindow* window, int button, int action, int mods);
     std::unique_ptr<ImGuiOverlay> imgui;
 };

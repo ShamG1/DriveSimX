@@ -125,6 +125,8 @@ public:
 
 #ifdef SIM_MARL_ENABLE_RENDER
     void render(bool show_lane_ids = false, bool show_lidar = false);
+    void set_view_mode(int mode);
+    int get_view_mode() const;
 
     // GLFW input/window helpers (available only after first render() creates a window)
     bool window_should_close() const;
