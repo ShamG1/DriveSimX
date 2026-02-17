@@ -33,11 +33,6 @@ def _lazy_import():
     if _cpp_mod is None:
         try:
             _cpp_mod = importlib.import_module("SIM_MARL_ENV")
-            # Diagnostic: show which binary is loaded (useful when multiple builds exist)
-            try:
-                print(f"[cpp_backend] Loaded SIM_MARL_ENV from: {_cpp_mod.__file__}")
-            except Exception:
-                pass
         except ModuleNotFoundError:
             _cpp_mod = None
     return _cpp_mod

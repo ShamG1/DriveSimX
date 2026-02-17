@@ -147,7 +147,7 @@ void ScenarioEnv::add_car_with_route(const std::string& start_id, const std::str
     if (it == lane_layout.points.end()) {
         return;
     }
-    const auto spawn = it->second;
+    auto spawn = it->second;
     int intent = INTENT_LEFT;
     auto it_int = route_intents.find({start_id, end_id});
     if (it_int != route_intents.end()) {
@@ -169,6 +169,33 @@ void ScenarioEnv::add_car_with_route(const std::string& start_id, const std::str
         float dx = path[1].first - path[0].first;
         float dy = path[1].second - path[0].second;
         heading = std::atan2(-dy, dx);
+
+        // Spawn deconfliction: if the start position is occupied, shift forward along the path.
+        // Use ~1.5 car lengths as the step distance.
+        const float norm = std::sqrt(dx * dx + dy * dy);
+        if (norm > 1e-6f) {
+            const float ux = dx / norm;
+            const float uy = dy / norm;
+
+            const float car_len = 54.0f; // Car::length default
+            const float min_dist = 1.5f * car_len;
+            const int max_tries = 20;
+
+            for (int t = 0; t < max_tries; ++t) {
+                bool occupied = false;
+                for (const auto& other : cars) {
+                    const float ox = other.state.x - spawn.first;
+                    const float oy = other.state.y - spawn.second;
+                    if ((ox * ox + oy * oy) < (min_dist * min_dist)) {
+                        occupied = true;
+                        break;
+                    }
+                }
+                if (!occupied) break;
+                spawn.first += ux * min_dist;
+                spawn.second += uy * min_dist;
+            }
+        }
     }
 
     Car c;

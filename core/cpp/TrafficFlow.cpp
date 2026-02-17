@@ -92,8 +92,6 @@ void ScenarioEnv::init_traffic_routes() {
             }
         }
         
-        std::cerr << "[TrafficFlow] Init Merge: " << traffic_routes.size() 
-                  << " routes. Ramp (IN_RAMP_1 -> OUT_2) included." << std::endl;
         return;
     }
 
