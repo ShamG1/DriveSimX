@@ -26,7 +26,7 @@ from core.env import ScenarioEnv, ROUTE_MAP_BY_SCENARIO
 def main():
     config = {
         'traffic_flow': True,
-        'traffic_density': 5,
+        'traffic_density': 2,
         'traffic_mode': 'stochastic',
         'num_agents': 1,
         'scenario_name': 'roundabout_3lane',
