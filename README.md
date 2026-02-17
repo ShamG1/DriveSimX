@@ -117,10 +117,10 @@ python test.py
 
 ## 🎮 使用方法
 
-安装完成后，你可以在任何地方通过 `sim_marl` 导入并使用环境：
+安装完成后，你可以在任何地方通过 `drivesimx` 导入并使用环境：
 
 ```python
-from sim_marl import ScenarioEnv
+from drivesimx import ScenarioEnv
 import numpy as np
 
 # 1. 准备配置

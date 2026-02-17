@@ -9,7 +9,7 @@
 
 namespace py = pybind11;
 
-PYBIND11_MODULE(SIM_MARL_ENV, m) {
+PYBIND11_MODULE(DRIVESIMX_ENV, m) {
     m.doc() = "C++ backend for high-speed Scenario MCTS";
 
     py::class_<State>(m, "State")

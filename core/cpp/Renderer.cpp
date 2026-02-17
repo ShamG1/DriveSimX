@@ -212,7 +212,7 @@ struct Renderer::Impl {
 
     // Camera params (3D_TOP)
     float top_yaw{0.0f};
-    float top_pitch{0.85f};
+    float top_pitch{0.70f};
     float top_dist{900.0f};
     float top_center_x{WIDTH * 0.5f};
     float top_center_z{HEIGHT * 0.5f};
@@ -657,11 +657,12 @@ void Renderer::draw_bitmap_background(const ScenarioEnv& env) const {
         glColor4f(1.0f, 1.0f, 1.0f, 1.0f);
 
         // Explicit CCW order for the ground quad
+        // Flip texture V coordinate to match the flipped background upload (y=0 at top)
         glBegin(GL_QUADS);
-        glTexCoord2f(0.0f, 0.0f); glVertex3f(0.0f, -0.5f, 0.0f);
-        glTexCoord2f(1.0f, 0.0f); glVertex3f((float)WIDTH, -0.5f, 0.0f);
-        glTexCoord2f(1.0f, 1.0f); glVertex3f((float)WIDTH, -0.5f, (float)HEIGHT);
-        glTexCoord2f(0.0f, 1.0f); glVertex3f(0.0f, -0.5f, (float)HEIGHT);
+        glTexCoord2f(0.0f, 1.0f); glVertex3f(0.0f, -0.5f, 0.0f);
+        glTexCoord2f(1.0f, 1.0f); glVertex3f((float)WIDTH, -0.5f, 0.0f);
+        glTexCoord2f(1.0f, 0.0f); glVertex3f((float)WIDTH, -0.5f, (float)HEIGHT);
+        glTexCoord2f(0.0f, 0.0f); glVertex3f(0.0f, -0.5f, (float)HEIGHT);
         glEnd();
 
         glEnable(GL_CULL_FACE);
@@ -681,7 +682,7 @@ void Renderer::update_view_box(const ScenarioEnv& env) {
 
     for (int y = 0; y < HEIGHT; ++y) {
         for (int x = 0; x < WIDTH; ++x) {
-            if (env.bitmap_road.at(x, y) > 127) {
+            if (env.bitmap_road.at(x, y) > 0) {
                 if (x < min_x) min_x = x;
                 if (x > max_x) max_x = x;
                 if (y < min_y) min_y = y;
@@ -742,15 +743,13 @@ void Renderer::update_view_box(const ScenarioEnv& env) {
             impl->v_min_y = new_min_y;
             impl->v_max_y = new_max_y;
 
-            if (first_bbox_log) {
-                std::cerr << "[Renderer] bbox/view-box (px): "
-                          << "raw(min_x=" << min_x << ",max_x=" << max_x << ",min_y=" << min_y << ",max_y=" << max_y << ") "
-                          << "view(min_x=" << impl->v_min_x << ",max_x=" << impl->v_max_x
-                          << ",min_y=" << impl->v_min_y << ",max_y=" << impl->v_max_y << ")\n";
-            }
+            // Always log when view-box changes to help debug scenario alignment
+            std::cerr << "[Renderer] Scenario: " << env.scenario_name 
+                      << " | bbox(px): " << min_x << "," << min_y << " to " << max_x << "," << max_y 
+                      << " | view-box: " << impl->v_min_x << "," << impl->v_min_y 
+                      << " to " << impl->v_max_x << "," << impl->v_max_y << std::endl;
 
-            // Auto-resize window to a square. Scenarios are defined on a square map (WIDTH x HEIGHT),
-            // and we want to avoid pillarbox/letterbox black bars while keeping aspect ratio.
+            // Auto-resize window to a square.
             int target = 900;
             glfwSetWindowSize(impl->window, target, target);
         }
@@ -894,7 +893,7 @@ void Renderer::render(const ScenarioEnv& env, bool show_lane_ids, bool show_lida
 
             float ex = ego.state.x - impl->follow_dist * cp * cy;
             float ey = 8.0f + impl->follow_dist * sp;
-            float ez = ego.state.y - impl->follow_dist * cp * sy;
+            float ez = ego.state.y + impl->follow_dist * cp * sy;
             setup_lookat(ex, ey, ez, ego.state.x, 3.0f, ego.state.y, 0, 1, 0);
         } else {
             // Fallback
@@ -1162,16 +1161,28 @@ void Renderer::draw_route(const ScenarioEnv& env) const{
     if(!env.cars.empty()) {
         const auto& car = env.cars[0];
         if(!car.path.empty()){
-            glLineWidth(2.0f);
-            glColor4f(RenderColors::RouteCyan.r, RenderColors::RouteCyan.g, RenderColors::RouteCyan.b, RenderColors::RouteCyan.a);
-            glBegin(GL_LINE_STRIP);
-            for(const auto& p : car.path){
-                glVertex2f(ndc_x(p.first, impl->v_min_x, impl->v_max_x),
-                           ndc_y(p.second, impl->v_min_y, impl->v_max_y));
+            glLineWidth(2.5f);
+            glColor4f(RenderColors::RouteCyan.r, RenderColors::RouteCyan.g, RenderColors::RouteCyan.b, 0.8f);
+            
+            if (impl->view_mode == VIEW_2D) {
+                glBegin(GL_LINE_STRIP);
+                for(const auto& p : car.path){
+                    glVertex2f(ndc_x(p.first, impl->v_min_x, impl->v_max_x),
+                               ndc_y(p.second, impl->v_min_y, impl->v_max_y));
+                }
+                glEnd();
+            } else {
+                // 3D mode: draw on ground plane
+                glDisable(GL_LIGHTING);
+                glBegin(GL_LINE_STRIP);
+                for(const auto& p : car.path){
+                    glVertex3f(p.first, -0.4f, p.second);
+                }
+                glEnd();
+                glEnable(GL_LIGHTING);
             }
-            glEnd();
 
-            // Lookahead target point (match Scenario agent observation)
+            // Lookahead target point
             const int lookahead = 10;
             int target_idx = car.path_index + lookahead;
             if(target_idx < 0) target_idx = 0;
@@ -1180,8 +1191,22 @@ void Renderer::draw_route(const ScenarioEnv& env) const{
             const float tx = car.path[target_idx].first;
             const float ty = car.path[target_idx].second;
 
-            draw_circle_px(tx, ty, 4.0f, 10, RenderColors::TargetRed.r, RenderColors::TargetRed.g, RenderColors::TargetRed.b,
-                           impl->v_min_x, impl->v_max_x, impl->v_min_y, impl->v_max_y);
+            if (impl->view_mode == VIEW_2D) {
+                draw_circle_px(tx, ty, 4.0f, 10, RenderColors::TargetRed.r, RenderColors::TargetRed.g, RenderColors::TargetRed.b,
+                               impl->v_min_x, impl->v_max_x, impl->v_min_y, impl->v_max_y);
+            } else {
+                // 3D Target Marker (Small quad on ground)
+                glDisable(GL_LIGHTING);
+                glColor3f(RenderColors::TargetRed.r, RenderColors::TargetRed.g, RenderColors::TargetRed.b);
+                float s = 1.5f;
+                glBegin(GL_QUADS);
+                glVertex3f(tx - s, -0.35f, ty - s);
+                glVertex3f(tx + s, -0.35f, ty - s);
+                glVertex3f(tx + s, -0.35f, ty + s);
+                glVertex3f(tx - s, -0.35f, ty + s);
+                glEnd();
+                glEnable(GL_LIGHTING);
+            }
         }
     }
 
@@ -1226,6 +1251,7 @@ void Renderer::draw_cars(const ScenarioEnv& env) const{
         
         if (impl->view_mode == VIEW_2D) {
             float x=car.state.x; float y=car.state.y; float heading=car.state.heading;
+
             float len=CAR_LENGTH; float wid=CAR_WIDTH;
             float hl=len*0.5f; float hw=wid*0.5f;
 

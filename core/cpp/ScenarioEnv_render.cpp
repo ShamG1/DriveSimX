@@ -1,6 +1,6 @@
 #include "ScenarioEnv.h"
 
-#ifdef SIM_MARL_ENABLE_RENDER
+#ifdef DRIVESIMX_ENABLE_RENDER
 #include "Renderer.h"
 
 void ScenarioEnv::render(bool show_lane_ids, bool show_lidar){

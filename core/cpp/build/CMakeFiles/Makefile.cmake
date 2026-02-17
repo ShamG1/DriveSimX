@@ -7,7 +7,7 @@ set(CMAKE_DEPENDS_GENERATOR "Unix Makefiles")
 # The top level Makefile was generated from the following files:
 set(CMAKE_MAKEFILE_DEPENDS
   "CMakeCache.txt"
-  "/home/g/SIM_MARL/core/cpp/CMakeLists.txt"
+  "/home/g/DriveSimX/core/cpp/CMakeLists.txt"
   "CMakeFiles/4.2.3/CMakeCUDACompiler.cmake"
   "CMakeFiles/4.2.3/CMakeCXXCompiler.cmake"
   "CMakeFiles/4.2.3/CMakeSystem.cmake"
@@ -192,5 +192,5 @@ set(CMAKE_MAKEFILE_PRODUCTS
 
 # Dependency information for all targets:
 set(CMAKE_DEPEND_INFO_FILES
-  "CMakeFiles/SIM_MARL_ENV.dir/DependInfo.cmake"
+  "CMakeFiles/DRIVESIMX_ENV.dir/DependInfo.cmake"
   )

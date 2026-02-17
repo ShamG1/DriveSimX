@@ -24,7 +24,7 @@ def main():
         'max_steps': 2000,
         'respawn_enabled': True,
         'show_lane_ids': False,
-        'show_lidar': True,
+        'show_lidar': False,
     }
 
     env = ScenarioEnv(config)
@@ -60,7 +60,7 @@ def main():
 
     total_reward = 0.0
     running = True
-    show_lidar = True
+    show_lidar = config.get('show_lidar', False)
     print_obs = False
 
     # GLFW key codes (same as GLFW_KEY_*)
