@@ -15,7 +15,12 @@ static inline float wrap_angle_rad_tf(float a) {
 // Helper: clamp index
 static inline size_t clamp_idx(size_t i, size_t n) { return (n == 0) ? 0 : (i < n ? i : (n - 1)); }
 
-static inline std::pair<float, float> plan_npc_action_tf(const Car& npc, const std::vector<const Car*>& /*all_vehicles*/) {
+static inline float clampf_tf(float x, float lo, float hi) {
+    return std::max(lo, std::min(hi, x));
+}
+
+static inline std::pair<float, float> plan_npc_action_tf(const Car& npc, const std::vector<const Car*>& all_vehicles) {
+    // Lateral: keep existing pure-pursuit-ish tracking to the precomputed path.
     float steer_cmd = 0.0f;
     if (npc.path.size() >= 2) {
         const float x = npc.state.x;
@@ -29,7 +34,7 @@ static inline std::pair<float, float> plan_npc_action_tf(const Car& npc, const s
         float acc_d = 0.0f;
         int target_idx = idx;
         for (int i = idx; i + 1 < (int)npc.path.size(); ++i) {
-            acc_d += std::hypot(npc.path[i+1].first - npc.path[i].first, 
+            acc_d += std::hypot(npc.path[i+1].first - npc.path[i].first,
                                 npc.path[i+1].second - npc.path[i].second);
             target_idx = i + 1;
             if (acc_d >= Ld) break;
@@ -41,19 +46,97 @@ static inline std::pair<float, float> plan_npc_action_tf(const Car& npc, const s
         const float dx = tx - x;
         const float dy = ty - y;
         const float angle_to_target = std::atan2(dy, dx);
-        
-        const float target_heading_math = -angle_to_target; 
+
+        const float target_heading_math = -angle_to_target;
         const float heading_err = wrap_angle_rad_tf(target_heading_math - heading);
 
-        steer_cmd = std::max(-1.0f, std::min(1.0f, heading_err * 8.0f));
+        steer_cmd = clampf_tf(heading_err * 8.0f, -1.0f, 1.0f);
     }
 
-    const float target_speed = PHYSICS_MAX_SPEED * 0.25f; 
-    float acc_throttle = 0.0f;
-    if (npc.state.v < target_speed) acc_throttle = 0.4f;
-    else acc_throttle = -0.2f;
+    // Longitudinal: IDM-style car-following using nearest lead vehicle along the same path.
+    // This is intentionally lightweight and only needs local neighbor checks.
+    const float v = std::max(0.0f, npc.state.v);
 
-    return {acc_throttle, steer_cmd};
+    // Desired free-flow speed (keep existing ~25% max, but let IDM handle smooth approach).
+    const float v0 = PHYSICS_MAX_SPEED * 0.25f;
+
+    // IDM parameters (tuned for pixel-world; adjust if you see too much braking/accordion).
+    const float a_max = MAX_ACC * 0.6f;     // comfortable acceleration
+    const float b_comf = MAX_ACC * 0.9f;    // comfortable braking (positive)
+    const float T_headway = 0.8f;           // desired time headway
+    const float s0 = 1.5f * CAR_LENGTH;     // minimum gap
+    const float delta = 4.0f;               // acceleration exponent
+
+    const int my_idx = std::max(0, npc.path_index);
+
+    // Find nearest lead vehicle in a path-index window.
+    const Car* lead = nullptr;
+    float best_ds = std::numeric_limits<float>::infinity();
+
+    // Neighbor gating: only consider vehicles close in Euclidean distance too.
+    const float neigh_r = 150.0f;
+    const float neigh_r2 = neigh_r * neigh_r;
+
+    for (const Car* other : all_vehicles) {
+        if (!other) continue;
+        if (other == &npc) continue;
+        if (!other->alive) continue;
+
+        // quick radius filter
+        const float dx = other->state.x - npc.state.x;
+        const float dy = other->state.y - npc.state.y;
+        const float d2 = dx*dx + dy*dy;
+        if (d2 > neigh_r2) continue;
+
+        const int oi = std::max(0, other->path_index);
+        const int di = oi - my_idx;
+        if (di <= 0) continue;
+
+        // Only treat as "same stream" if indices are reasonably close.
+        if (di > 220) continue;
+
+        // Ensure the other car is actually in front of us (in heading direction).
+        const float fwdx = std::cos(npc.state.heading);
+        const float fwdy = -std::sin(npc.state.heading);
+        const float along = dx*fwdx + dy*fwdy;
+        if (along <= 0.0f) continue;
+
+        // approximate gap along the road as the along-projection minus half-lengths
+        const float gap = along - 0.5f*(npc.length + other->length);
+        if (gap <= 0.0f) continue;
+
+        if (gap < best_ds) {
+            best_ds = gap;
+            lead = other;
+        }
+    }
+
+    float acc_cmd = 0.0f;
+    if (!lead) {
+        // free road
+        const float term = std::pow(clampf_tf(v / std::max(0.1f, v0), 0.0f, 3.0f), delta);
+        acc_cmd = a_max * (1.0f - term);
+    } else {
+        const float s = std::max(0.1f, best_ds);
+        const float dv = v - lead->state.v; // approaching rate (+ means we are faster)
+
+        const float sqrt_ab = std::sqrt(std::max(1e-4f, a_max * b_comf));
+        const float s_star = s0 + v * T_headway + (v * dv) / (2.0f * sqrt_ab);
+
+        const float term_v = std::pow(clampf_tf(v / std::max(0.1f, v0), 0.0f, 3.0f), delta);
+        const float term_s = (s_star / s);
+        acc_cmd = a_max * (1.0f - term_v - term_s * term_s);
+
+        // Extra safety: if extremely close, brake hard.
+        if (s < 0.8f * CAR_LENGTH) {
+            acc_cmd = -MAX_ACC;
+        }
+    }
+
+    // Map acceleration command to throttle in [-1,1].
+    float throttle_cmd = clampf_tf(acc_cmd / std::max(1e-3f, MAX_ACC), -1.0f, 1.0f);
+
+    return {throttle_cmd, steer_cmd};
 }
 
 void ScenarioEnv::init_traffic_routes() {
