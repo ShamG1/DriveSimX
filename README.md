@@ -147,6 +147,7 @@ config = {
     'scenario_name': 'cross_2lane',  # 必填：匹配 scenarios/ 下的目录名
     'traffic_flow': True,            # True=单智能体+交通流, False=多智能体
     'traffic_density': 0.5,          # 交通密度
+    'traffic_mode': 'stochastic'     # 交通流模式 stochastic为随机模式，constant为固定模式
     'render_mode': 'human',          # 'human' 或 None
     'show_lidar': False,
     'show_lane_ids': False,
@@ -177,6 +178,7 @@ config = {
     'scenario_name': 'cross_2lane',
     'traffic_flow': True,  # 启用交通流
     'traffic_density': 0.5,  # 交通密度
+    'traffic_mode': 'stochastic', # 交通流模式 
     'render_mode': 'human',
     'max_steps': 2000,
 }
@@ -188,8 +190,8 @@ config = {
 config = {
     'scenario_name': 'cross_2lane',
     'traffic_flow': False,  # 禁用交通流
-    'num_agents': 4,  # 智能体数量
-    'use_team_reward': True,  # 是否使用团队奖励
+    'num_agents': 4,  # 智能体数量（>1 时默认启用 team reward，无需显式设置）
+    # 'use_team_reward': True,  # 可选：显式覆盖（默认当 num_agents>1 时为 True）
     'render_mode': 'human',
     'max_steps': 2000,
 }
@@ -271,10 +273,9 @@ r_i^mix(t) = (1 - α) * r_i^ind(t) + α * r̄^ind(t)
 ```python
 config = {
     'traffic_flow': True,
-    'traffic_mode': 'constant',  # 选项: 'stochastic', 'constant'
-    'traffic_density': 0.5,      # 密度/到达率
-    'traffic_kmax': 20,          # constant模式下的最大NPC数量上限
-}
+    'traffic_mode': 'constant',  
+    'traffic_density': 0.5,      
+    'traffic_kmax': 20,          
 ```
 
 ### NPC 车辆行为

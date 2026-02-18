@@ -114,7 +114,13 @@ class ScenarioEnv:
         self.show_lane_ids = bool(config.get("show_lane_ids", False))
         self.show_lidar = bool(config.get("show_lidar", False))
 
-        use_team = bool(config.get("use_team_reward", DEFAULT_REWARD_CONFIG.get("use_team_reward", False)))
+        # Determine use_team_reward: default to True if num_agents > 1, unless traffic_flow is enabled.
+        # Allow explicit override from config if present.
+        if "use_team_reward" in config:
+            use_team = bool(config["use_team_reward"])
+        else:
+            use_team = bool(self.num_agents > 1)
+
         if self.traffic_flow:
             use_team = False
 
