@@ -92,10 +92,111 @@ def _parse_num_lanes_from_scenario_name(name: str) -> int:
     )
 
 
+class MetricsTracker:
+    """Episode + scenario-level metrics.
+
+    Metrics are computed using *agent_id* (not slot index) so respawn-enabled
+    training remains comparable to respawn-disabled evaluation.
+    """
+
+    def __init__(self):
+        self.history: Dict[str, List[Dict[str, Any]]] = {}
+        self.last_episode_metrics: Dict[str, Any] | None = None
+        self._active = False
+
+    def reset_episode(self, scenario_name: str):
+        self._active = True
+        self.current_scenario = str(scenario_name)
+        self.current_time = 0.0
+
+        # agent_id -> flags + first success time
+        self._agents: Dict[int, Dict[str, Any]] = {}
+
+    def update(self, dt: float, info: Dict[str, Any]):
+        if not self._active:
+            return
+
+        self.current_time += float(dt)
+
+        status_list = list(info.get("status", []))
+        agent_ids = list(info.get("agent_ids", []))
+
+        for i, status in enumerate(status_list):
+            aid = int(agent_ids[i]) if i < len(agent_ids) else int(i)
+
+            rec = self._agents.get(aid)
+            if rec is None:
+                rec = {"participated": True, "arrived": False, "collided": False, "success_time": None}
+                self._agents[aid] = rec
+
+            if status == "SUCCESS" and not rec["arrived"]:
+                rec["arrived"] = True
+                rec["success_time"] = self.current_time
+            elif status in ("CRASH_CAR", "CRASH_WALL") and not rec["collided"]:
+                rec["collided"] = True
+
+    def end_episode(self, *, terminated: bool, truncated: bool, end_reason: str):
+        if not self._active:
+            return
+
+        participated = list(self._agents.keys())
+        total_participated = len(participated)
+
+        arrived_ids = [aid for aid, r in self._agents.items() if r.get("arrived")]
+        collided_ids = [aid for aid, r in self._agents.items() if r.get("collided")]
+        success_times = [r["success_time"] for r in self._agents.values() if r.get("arrived") and r.get("success_time") is not None]
+
+        metrics: Dict[str, Any] = {
+            "scenario": self.current_scenario,
+            "terminated": bool(terminated),
+            "truncated": bool(truncated),
+            "end_reason": str(end_reason),
+            "episode_time": float(self.current_time),
+            "agents_participated": total_participated,
+            "arrived_count": len(arrived_ids),
+            "collided_count": len(collided_ids),
+            "success_rate": (len(arrived_ids) / total_participated) if total_participated > 0 else 0.0,
+            "collision_rate": (len(collided_ids) / total_participated) if total_participated > 0 else 0.0,
+            "avg_time_to_success": float(np.mean(success_times)) if success_times else None,
+        }
+
+        self.last_episode_metrics = metrics
+        self.history.setdefault(self.current_scenario, []).append(metrics)
+
+        self._active = False
+
+    def get_summary(self, scenario_name: str | None = None) -> Dict[str, Dict[str, Any]]:
+        scenarios = [scenario_name] if scenario_name else list(self.history.keys())
+        out: Dict[str, Dict[str, Any]] = {}
+
+        for sn in scenarios:
+            eps = self.history.get(sn, [])
+            if not eps:
+                continue
+
+            total_agents = sum(int(e.get("agents_participated", 0)) for e in eps)
+            total_arrived = sum(int(e.get("arrived_count", 0)) for e in eps)
+            total_collided = sum(int(e.get("collided_count", 0)) for e in eps)
+
+            # avg_time_to_success: average across episodes where it's defined
+            times = [e.get("avg_time_to_success") for e in eps if e.get("avg_time_to_success") is not None]
+
+            out[sn] = {
+                "episodes": len(eps),
+                "total_agents_participated": total_agents,
+                "success_rate": (total_arrived / total_agents) if total_agents > 0 else 0.0,
+                "collision_rate": (total_collided / total_agents) if total_agents > 0 else 0.0,
+                "avg_time_to_success": float(np.mean(times)) if times else None,
+            }
+
+        return out
+
 class ScenarioEnv:
     def __init__(self, config: Dict[str, Any] | None = None):
         if config is None:
             config = {}
+
+        self.metrics_tracker = MetricsTracker()
 
         self.scenario_name = config.get("scenario_name", None)
         if not self.scenario_name:
@@ -124,8 +225,16 @@ class ScenarioEnv:
         if self.traffic_flow:
             use_team = False
 
-        respawn = bool(config.get("respawn_enabled", True))
+        self.respawn_enabled = bool(config.get("respawn_enabled", True))
+        respawn = self.respawn_enabled
         max_steps = int(config.get("max_steps", 2000))
+
+        # Metrics behavior (enabled by default)
+        # Keep the public config surface minimal: a single on/off switch.
+        self.metrics_enabled = bool(config.get("metrics_enabled", False))
+        # Internal policy: when respawn is enabled, also finalize metrics if all agents are dead.
+        # (Some training loops treat this as episode end.)
+        self._metrics_end_on_all_dead = True
 
         self.ego_routes = config.get("ego_routes", None)
         if self.ego_routes is None:
@@ -219,6 +328,10 @@ class ScenarioEnv:
 
 
     def reset(self):
+        # If the caller resets mid-episode, finalize the previous episode's metrics.
+        if self.metrics_enabled and getattr(self.metrics_tracker, "_active", False):
+            self.metrics_tracker.end_episode(terminated=False, truncated=False, end_reason="reset")
+
         self.env.reset()
 
         # Ensure ego_routes length matches num_agents
@@ -238,6 +351,11 @@ class ScenarioEnv:
             except Exception:
                 self.traffic_cars = []
         obs = self._collect_obs()
+
+        if self.metrics_enabled:
+            if not getattr(self.metrics_tracker, "_active", False):
+                self.metrics_tracker.reset_episode(self.scenario_name)
+
         if self.traffic_flow:
             return obs[0], {}
         return obs, {}
@@ -304,7 +422,23 @@ class ScenarioEnv:
             "truncated": truncated,
             "done": list(res.done),
             "status": list(res.status),
+            "agent_ids": list(map(int, getattr(res, "agent_ids", []))),
         }
+
+        # Update metrics every step (enabled by default)
+        if self.metrics_enabled:
+            self.metrics_tracker.update(float(dt), info)
+
+            end_reason = None
+            if truncated:
+                end_reason = "truncated"
+            elif terminated:
+                end_reason = "terminated"
+            elif self.respawn_enabled and self._metrics_end_on_all_dead and info.get("agents_alive", 1) == 0:
+                end_reason = "all_dead"
+
+            if end_reason is not None:
+                self.metrics_tracker.end_episode(terminated=terminated, truncated=truncated, end_reason=end_reason)
 
         if self.traffic_flow:
             return obs[0], float(rewards[0]) if len(rewards) else 0.0, terminated, truncated, info
@@ -329,6 +463,19 @@ class ScenarioEnv:
         if show_connections is None:
             show_connections = bool(getattr(self, "show_connections", False))
         self.env.render(bool(show_lane_ids), bool(show_lidar), bool(show_connections))
+
+    def metrics_summary(self, scenario_name: str | None = None) -> Dict[str, Dict[str, Any]]:
+        """Convenience wrapper around MetricsTracker.get_summary()."""
+        return self.metrics_tracker.get_summary(scenario_name)
+
+    def last_metrics(self) -> Dict[str, Any] | None:
+        """Return metrics for the most recently finalized episode (or None)."""
+        return self.metrics_tracker.last_episode_metrics
+
+    def reset_metrics_history(self):
+        """Clear all accumulated metrics history."""
+        self.metrics_tracker.history.clear()
+        self.metrics_tracker.last_episode_metrics = None
 
     def close(self):
         # C++ side owns the GLFW window; nothing to close here.

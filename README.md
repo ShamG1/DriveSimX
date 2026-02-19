@@ -201,6 +201,96 @@ config = {
 
 ---
 
+## 📈 评测指标 (Metrics)
+
+环境在评测/Benchmark 时可选开启指标统计（默认关闭）。
+
+### 1) 核心指标
+
+我们统计每个 episode 的以下指标：
+
+- **成功率 (Success Rate)**：到达终点的智能体比例
+- **碰撞率 (Collision Rate)**：发生碰撞的智能体比例
+- **平均到达时间 (Avg Time to Success)**：成功智能体的平均到达时间（秒）
+
+### 2) 状态与事件定义
+
+每步 `env.step()` 返回的 `info` 中包含：
+
+- `info["status"]`: `List[str]`，每个 agent 一个状态，常见值：
+  - `"SUCCESS"`：到达终点
+  - `"CRASH_CAR"`：与车辆碰撞
+  - `"CRASH_WALL"`：撞墙/冲出道路
+  - `"ALIVE"`：正常行驶
+  - `"ON_LINE"`：压线（非终止，仅惩罚）
+- `info["agent_ids"]`: `List[int]`，与 `status` 同索引对齐，用于唯一标识“实际参与过的智能体”
+
+### 3) 变量含义
+
+对单个 episode，定义：
+
+- $\\mathcal{A}$：本 episode 内**实际参与过**的智能体集合
+- $N = |\\mathcal{A}|$：实际参与过的智能体数量
+- $\\mathcal{S} = \\{a \\in \\mathcal{A} \\mid a\\ \text{曾出现 } status=SUCCESS\\}$：成功到达的智能体集合
+- $\\mathcal{C} = \\{a \\in \\mathcal{A} \\mid a\\ \text{曾出现 } status\\in\\{CRASH\\_CAR,CRASH\\_WALL\\}\\}$：发生碰撞的智能体集合
+- $t_a$：智能体 $a$ **首次**到达终点（首次 `SUCCESS`）时刻（单位：秒，环境内部用 `dt` 累加）
+
+### 4) 计算公式
+
+- **成功率**：
+
+$
+SuccessRate = \\frac{|\\mathcal{S}|}{|\\mathcal{A}|}
+$
+
+- **碰撞率**：
+
+$
+CollisionRate = \\frac{|\\mathcal{C}|}{|\\mathcal{A}|}
+$
+
+- **平均到达时间**（只对成功智能体统计）：
+
+$
+AvgTimeToSuccess = \\frac{1}{|\\mathcal{S}|}\\sum_{a\\in\\mathcal{S}} t_a
+$
+
+当 $|\\mathcal{S}|=0$ 时，`AvgTimeToSuccess=None`。
+
+### 5) 如何开启与获取
+
+在创建环境时显式开启：
+
+```python
+from drivesimx import ScenarioEnv
+
+env = ScenarioEnv({
+    "scenario_name": "cross_2lane",
+    "traffic_flow": False,
+    "num_agents": 6,
+
+    # 推荐：评测阶段关闭重生
+    "respawn_enabled": False,
+
+    # 开启 metrics（默认 False）
+    "metrics_enabled": True,
+})
+
+obs, info = env.reset()
+
+done = False
+while not done:
+    # ... 你的算法产生 actions ...
+    obs, rewards, terminated, truncated, info = env.step(actions)
+    done = terminated or truncated
+
+# 最近一局指标
+print(env.last_metrics())
+
+# 按 scenario 聚合汇总（可跑多局后再取）
+print(env.metrics_summary())
+```
+
 ## 🎯 奖励函数配置
 
 奖励函数已集成在 `core/env.py` 中，可以通过 `reward_config` 参数自定义：
@@ -277,7 +367,8 @@ config = {
     'traffic_flow': True,
     'traffic_mode': 'constant',  
     'traffic_density': 0.5,      
-    'traffic_kmax': 20,          
+    'traffic_kmax': 20,     
+}     
 ```
 
 ### NPC 车辆行为
