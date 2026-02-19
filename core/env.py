@@ -353,8 +353,9 @@ class ScenarioEnv:
         obs = self._collect_obs()
 
         if self.metrics_enabled:
-            if not getattr(self.metrics_tracker, "_active", False):
-                self.metrics_tracker.reset_episode(self.scenario_name)
+            # Only start a new episode if we aren't mid-episode (resetting after end_episode was already called)
+            # This avoids the first reset in __init__ starting a tracked episode that gets counted twice.
+            self.metrics_tracker.reset_episode(self.scenario_name)
 
         if self.traffic_flow:
             return obs[0], {}
@@ -473,9 +474,23 @@ class ScenarioEnv:
         return self.metrics_tracker.last_episode_metrics
 
     def reset_metrics_history(self):
-        """Clear all accumulated metrics history."""
+        """Clear all accumulated metrics history.
+
+        Note: ScenarioEnv.__init__ calls reset() once. If metrics are enabled, that can start
+        an in-progress episode. This method clears both the stored history and any in-progress
+        episode state, so subsequent benchmarking starts from a clean slate.
+        """
         self.metrics_tracker.history.clear()
         self.metrics_tracker.last_episode_metrics = None
+
+        # Also drop any in-progress episode to avoid an extra "reset"-ended episode being counted.
+        if getattr(self.metrics_tracker, "_active", False):
+            self.metrics_tracker._active = False
+        if hasattr(self.metrics_tracker, "_agents"):
+            try:
+                self.metrics_tracker._agents.clear()
+            except Exception:
+                pass
 
     def close(self):
         # C++ side owns the GLFW window; nothing to close here.

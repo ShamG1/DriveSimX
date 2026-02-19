@@ -25,9 +25,9 @@ def run_benchmark(
         "metrics_enabled": True,
     })
 
-    # 确保从干净的统计开始（避免 __init__ 内部 reset 影响）
+    # 确保从干净的统计开始：清空历史后直接进入 episode 循环。
+    # 注意：ScenarioEnv.__init__ 内部会调用一次 reset()；这里不再额外 reset，避免引入多余 episode 统计。
     env.reset_metrics_history()
-    env.reset()
 
     for ep in range(1, episodes + 1):
         obs, _info = env.reset()
@@ -50,7 +50,7 @@ def run_benchmark(
             actions[:, 0] = throttle
             actions[:, 1] = steer
 
-            obs, rewards, terminated, truncated, info = env.step(actions)
+            obs, _rewards, terminated, truncated, _info = env.step(actions)
             steps += 1
             done = terminated or truncated
 
