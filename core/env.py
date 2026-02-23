@@ -446,7 +446,7 @@ class ScenarioEnv:
         return obs, rewards, terminated, truncated, info
 
     def freeze_traffic(self, freeze: bool):
-        """Freeze/unfreeze NPC refills (useful for MCTS rollouts)."""
+        """Freeze/unfreeze NPC refills (useful for rollouts)."""
         self.env.freeze_traffic(freeze)
 
     def render(

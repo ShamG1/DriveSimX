@@ -23,8 +23,6 @@ file(REMOVE_RECURSE
   "CMakeFiles/DRIVESIMX_ENV.dir/TrafficFlow.cpp.o.d"
   "CMakeFiles/DRIVESIMX_ENV.dir/bindings.cpp.o"
   "CMakeFiles/DRIVESIMX_ENV.dir/bindings.cpp.o.d"
-  "CMakeFiles/DRIVESIMX_ENV.dir/mcts_search.cpp.o"
-  "CMakeFiles/DRIVESIMX_ENV.dir/mcts_search.cpp.o.d"
   "CMakeFiles/DRIVESIMX_ENV.dir/stb_image_impl.cpp.o"
   "CMakeFiles/DRIVESIMX_ENV.dir/stb_image_impl.cpp.o.d"
   "CMakeFiles/DRIVESIMX_ENV.dir/third_party/imgui/backends/imgui_impl_glfw.cpp.o"

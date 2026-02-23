@@ -2,7 +2,7 @@
 #include <vector>
 #include "Car.h"
 
-// Snapshot state for fast MCTS rollbacks.
+// Snapshot state for fast rollbacks.
 // Optimized: Only stores dynamic state to avoid expensive path vector copies.
 struct EnvState {
     std::vector<CarDynamicState> cars;

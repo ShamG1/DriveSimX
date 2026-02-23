@@ -1,5 +1,5 @@
 # This file is a local copy of necessary components from the 'Scenario' package
-# to make C_MCTS a self-contained module.
+# to make DriveSimX a self-contained module.
 # === From Scenario/config.py ===
 WIDTH, HEIGHT = 1000, 1000
 SCALE = 12
