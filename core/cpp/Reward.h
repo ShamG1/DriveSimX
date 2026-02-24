@@ -3,13 +3,13 @@
 #include <vector>
 
 struct RewardConfig {
-    float k_prog{10.0f};
+    float k_prog{20.0f};
     float v_min_ms{1.0f};
-    float k_stuck{-0.01f};
-    float k_cv{-10.0f};
-    float k_cw{-5.0f};    // Crash Wall/Off-road
-    float k_cl{-2.0f};    // Crash Line (Yellow line)
-    float k_succ{10.0f};
+    float k_stuck{-0.001f};
+    float k_cv{-100.0f};
+    float k_cw{-50.0f};    // Crash Wall/Off-road
+    float k_cl{-1.0f};    // Crash Line (Yellow line)
+    float k_succ{100.0f};
     float k_sm{-0.02f};
     float alpha{0.2f};
 };

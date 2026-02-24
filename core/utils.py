@@ -1,5 +1,5 @@
 # This file is a local copy of necessary components from the 'Scenario' package
-# to make DriveSimX a self-contained module.
+# to make C_MCTS a self-contained module.
 # === From Scenario/config.py ===
 WIDTH, HEIGHT = 1000, 1000
 SCALE = 12
@@ -15,14 +15,14 @@ DEFAULT_REWARD_CONFIG = {
     'use_team_reward': False,  # Use team reward mixing (for multi-agent)
     'traffic_flow': False,      # If True, forces individual reward (single-agent with traffic)
     'reward_config': {
-        'progress_scale': 10.0, 
+        'progress_scale': 20.0, 
         'stuck_speed_threshold': 1.0,  # m/s
-        'stuck_penalty': -0.01,
-        'crash_vehicle_penalty': -10.0,
-        'crash_wall_penalty': -5.0,   # Off-road / wall
-        'crash_line_penalty': -0.1,   # Yellow line crossing (lighter than wall)
-        'crash_object_penalty': -5.0,  # Legacy fallback: applies to both if specific keys missing
-        'success_reward': 10.0,
+        'stuck_penalty': -0.001,
+        'crash_vehicle_penalty': -100.0,
+        'crash_wall_penalty': -50.0,   # Off-road / wall
+        'crash_line_penalty': -1.0,   # Yellow line crossing (lighter than wall)
+        'crash_object_penalty': -50.0,  # Legacy fallback: applies to both if specific keys missing
+        'success_reward': 100.0,
         'action_smoothness_scale': -0.02,
         'team_alpha': 0.2,
     }
