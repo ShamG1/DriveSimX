@@ -305,15 +305,16 @@ config = {
 
 # 2. 自定义奖励配置
 custom_reward_config = {
-    'progress_scale': 10.0,             # 进度奖励系数
-    'stuck_speed_threshold': 1.0,        # 卡住速度阈值 (m/s)
-    'stuck_penalty': -0.01,              # 卡住惩罚
-    'crash_vehicle_penalty': -10.0,      # 车辆碰撞惩罚
-    'crash_wall_penalty': -5.0,         # 撞墙/冲出道路惩罚
-    'crash_line_penalty': -2.0,         # 压实线/黄线惩罚
-    'success_reward': 10.0,             # 成功到达奖励
-    'action_smoothness_scale': -0.02,    # 动作平滑度系数
-    'team_alpha': 0.2,                  # 团队奖励混合系数（仅多智能体）
+    'progress_scale': 24.0,              # 前进进度奖励系数（越大越鼓励向目标前进）
+    'stuck_speed_threshold': 1.0,        # 判定“卡住”的速度阈值（m/s）
+    'stuck_penalty': -0.001,             # 低于卡住阈值时的惩罚
+    'crash_vehicle_penalty': -70.0,      # 与其他车辆碰撞惩罚
+    'crash_wall_penalty': -30.0,         # 偏离道路/撞墙惩罚
+    'crash_line_penalty': -1.0,          # 越过黄线惩罚（比撞墙更轻）
+    'crash_object_penalty': -30.0,       # 旧版兜底碰撞惩罚（缺少细分键时生效）
+    'success_reward': 70.0,              # 到达目标成功奖励
+    'action_smoothness_scale': -0.02,    # 动作平滑项系数（抑制突变控制）
+    'team_alpha': 0.2,                   # 团队奖励混合权重（个体/团队折中）
 }
 
 config = {

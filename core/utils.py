@@ -15,14 +15,13 @@ DEFAULT_REWARD_CONFIG = {
     'use_team_reward': False,  # Use team reward mixing (for multi-agent)
     'traffic_flow': False,      # If True, forces individual reward (single-agent with traffic)
     'reward_config': {
-        'progress_scale': 20.0, 
+        'progress_scale': 24.0,
         'stuck_speed_threshold': 1.0,  # m/s
         'stuck_penalty': -0.001,
-        'crash_vehicle_penalty': -100.0,
-        'crash_wall_penalty': -50.0,   # Off-road / wall
+        'crash_vehicle_penalty': -70.0,
+        'crash_wall_penalty': -30.0,   # Off-road / wall
         'crash_line_penalty': -1.0,   # Yellow line crossing (lighter than wall)
-        'crash_object_penalty': -50.0,  # Legacy fallback: applies to both if specific keys missing
-        'success_reward': 100.0,
+        'success_reward': 70.0,
         'action_smoothness_scale': -0.02,
         'team_alpha': 0.2,
     }

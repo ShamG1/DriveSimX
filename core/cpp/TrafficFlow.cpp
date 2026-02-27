@@ -58,7 +58,7 @@ static inline std::pair<float, float> plan_npc_action_tf(const Car& npc, const s
     const float v = std::max(0.0f, npc.state.v);
 
     // Desired free-flow speed (keep existing ~25% max, but let IDM handle smooth approach).
-    const float v0 = PHYSICS_MAX_SPEED * 0.25f;
+    const float v0 = PHYSICS_MAX_SPEED * 0.6f;
 
     // IDM parameters (tuned for pixel-world; adjust if you see too much braking/accordion).
     const float a_max = MAX_ACC * 0.6f;     // comfortable acceleration

@@ -31,12 +31,13 @@ DEFAULT_REWARD_CONFIG = {
     "use_team_reward": False,
     "traffic_flow": False,
     "reward_config": {
-        "progress_scale": 10.0,
+        "progress_scale": 24.0,
         "stuck_speed_threshold": 1.0,
-        "stuck_penalty": -0.01,
-        "crash_vehicle_penalty": -10.0,
-        "crash_object_penalty": -5.0,
-        "success_reward": 10.0,
+        "stuck_penalty": -0.001,
+        "crash_vehicle_penalty": -70.0,
+        "crash_wall_penalty": -30.0,
+        "crash_line_penalty": -1.0,
+        "success_reward": 70.0,
         "action_smoothness_scale": -0.02,
         "team_alpha": 0.2,
     },
@@ -60,11 +61,6 @@ def _apply_reward_config(env: Any, reward_cfg: Dict[str, Any]) -> None:
         rc.k_cw = float(reward_cfg["crash_wall_penalty"])
     if "crash_line_penalty" in reward_cfg:
         rc.k_cl = float(reward_cfg["crash_line_penalty"])
-    # Fallback for old config
-    if "crash_object_penalty" in reward_cfg:
-        val = float(reward_cfg["crash_object_penalty"])
-        if "crash_wall_penalty" not in reward_cfg: rc.k_cw = val
-        if "crash_line_penalty" not in reward_cfg: rc.k_cl = val
     if "success_reward" in reward_cfg:
         rc.k_succ = float(reward_cfg["success_reward"])
     if "action_smoothness_scale" in reward_cfg:
@@ -215,13 +211,9 @@ class ScenarioEnv:
         self.show_lane_ids = bool(config.get("show_lane_ids", False))
         self.show_lidar = bool(config.get("show_lidar", False))
 
-        # Determine use_team_reward: default to True if num_agents > 1, unless traffic_flow is enabled.
+        # Determine use_team_reward: default to False.
         # Allow explicit override from config if present.
-        if "use_team_reward" in config:
-            use_team = bool(config["use_team_reward"])
-        else:
-            use_team = bool(self.num_agents > 1)
-
+        use_team = bool(config.get("use_team_reward", False))
         if self.traffic_flow:
             use_team = False
 
@@ -446,7 +438,7 @@ class ScenarioEnv:
         return obs, rewards, terminated, truncated, info
 
     def freeze_traffic(self, freeze: bool):
-        """Freeze/unfreeze NPC refills (useful for rollouts)."""
+        """Freeze/unfreeze NPC refills (useful for MCTS rollouts)."""
         self.env.freeze_traffic(freeze)
 
     def render(
