@@ -1,10 +1,10 @@
-"""Fast C++-backed scenario environment with Python-compatible API.
+"""基于 C++ 后端的高性能场景环境（提供 Python 友好 API）。
 
-Rendering is delegated to the C++ OpenGL/GLFW renderer.
+渲染由 C++ OpenGL/GLFW 渲染器负责。
 
-Notes:
-- Multi-agent mode: returns obs (N,145), rewards (N,), terminated, truncated, info.
-- traffic_flow mode (single-agent): returns obs (145,), reward scalar, terminated, truncated, info.
+说明：
+- 多智能体模式：返回 obs (N,145)、rewards (N,)、terminated、truncated、info。
+- traffic_flow 模式（单智能体）：返回 obs (145,)、reward 标量、terminated、truncated、info。
 """
 from __future__ import annotations
 
@@ -12,6 +12,7 @@ import os
 import re
 import sys
 from typing import Any, Dict, List, Union
+from collections import deque
 
 import numpy as np
 
@@ -24,24 +25,7 @@ try:
 except ImportError:
     import cpp_backend  # type: ignore
 
-from .utils import build_lane_layout, ROUTE_MAP_BY_SCENARIO
-
-# Local default reward config (mirrors Scenario/config.py)
-DEFAULT_REWARD_CONFIG = {
-    "use_team_reward": False,
-    "traffic_flow": False,
-    "reward_config": {
-        "progress_scale": 24.0,
-        "stuck_speed_threshold": 1.0,
-        "stuck_penalty": -0.001,
-        "crash_vehicle_penalty": -70.0,
-        "crash_wall_penalty": -30.0,
-        "crash_line_penalty": -1.0,
-        "success_reward": 70.0,
-        "action_smoothness_scale": -0.02,
-        "team_alpha": 0.2,
-    },
-}
+from .utils import build_lane_layout, ROUTE_MAP_BY_SCENARIO, DEFAULT_REWARD_CONFIG
 
 
 def _apply_reward_config(env: Any, reward_cfg: Dict[str, Any]) -> None:
@@ -211,15 +195,34 @@ class ScenarioEnv:
         self.show_lane_ids = bool(config.get("show_lane_ids", False))
         self.show_lidar = bool(config.get("show_lidar", False))
 
-        # Determine use_team_reward: default to False.
-        # Allow explicit override from config if present.
+        # 是否启用团队奖励混合：默认关闭，可通过配置显式开启。
+        # 注意：traffic_flow（单智能体）模式下会强制关闭团队奖励。
         use_team = bool(config.get("use_team_reward", False))
         if self.traffic_flow:
             use_team = False
 
         self.respawn_enabled = bool(config.get("respawn_enabled", True))
         respawn = self.respawn_enabled
-        max_steps = int(config.get("max_steps", 2000))
+        max_steps = int(config.get("max_steps_per_episode", config.get("max_steps", 2000)))
+        self.max_steps = max_steps
+        # Penalty applied only when respawn is disabled and episode is truncated by max steps.
+        self.max_steps_penalty_no_respawn = float(
+            config.get("max_steps_penalty_no_respawn", DEFAULT_REWARD_CONFIG.get("max_steps_penalty_no_respawn", -5.0))
+        )
+        self.respawn_penalty = float(config.get("respawn_penalty", DEFAULT_REWARD_CONFIG.get("respawn_penalty", -0.5)))
+        self.no_progress_penalty = float(config.get("no_progress_penalty", DEFAULT_REWARD_CONFIG.get("no_progress_penalty", -0.2)))
+        self.no_progress_window_steps = max(1, int(config.get("no_progress_window_steps", DEFAULT_REWARD_CONFIG.get("no_progress_window_steps", 30))))
+        self.no_progress_threshold = float(config.get("no_progress_threshold", DEFAULT_REWARD_CONFIG.get("no_progress_threshold", 0.01)))
+
+        # Environment-level cooperative shaping / lightweight interaction modeling.
+        self.cooperative_mode = bool(config.get("cooperative_mode", False))
+        self.cooperative_alpha = float(config.get("cooperative_alpha", 0.3))
+        self.cooperative_credit_coef = float(config.get("cooperative_credit_coef", 0.0))
+        self.pairwise_coordination_enabled = bool(config.get("pairwise_coordination_enabled", False))
+        self.pairwise_distance_threshold = float(config.get("pairwise_distance_threshold", 80.0))
+        self.pairwise_brake_scale = float(config.get("pairwise_brake_scale", 0.35))
+        self.pairwise_cooldown_steps = max(1, int(config.get("pairwise_cooldown_steps", 6)))
+        self._pairwise_cooldown: Dict[tuple[int, int], int] = {}
 
         # Metrics behavior (enabled by default)
         # Keep the public config surface minimal: a single on/off switch.
@@ -349,6 +352,11 @@ class ScenarioEnv:
             # This avoids the first reset in __init__ starting a tracked episode that gets counted twice.
             self.metrics_tracker.reset_episode(self.scenario_name)
 
+        # Per-agent shaping trackers (environment-side, independent from trainer)
+        self._last_status_by_id: Dict[int, str] = {}
+        self._progress_hist_by_id: Dict[int, deque] = {}
+        self._last_progress_by_id: Dict[int, float] = {}
+
         if self.traffic_flow:
             return obs[0], {}
         return obs, {}
@@ -371,6 +379,113 @@ class ScenarioEnv:
         obs = self.env.get_observations()
         return np.asarray(obs, dtype=np.float32)
 
+    def _agent_progress_proxy(self, agent_slot: int, agent_id: int, obs: np.ndarray) -> float:
+        """Estimate per-agent progress for no-progress penalty.
+
+        Priority:
+        1) If C++ car object exposes route progress-like scalar, use it.
+        2) Fallback to observation first feature (commonly progress-like in this env family).
+        """
+        # 1) Try C++ car fields
+        try:
+            if 0 <= int(agent_slot) < len(self.cars):
+                car = self.cars[int(agent_slot)]
+                for attr in ("route_progress", "progress", "s", "distance_along_route"):
+                    if hasattr(car, attr):
+                        v = float(getattr(car, attr))
+                        if np.isfinite(v):
+                            return v
+        except Exception:
+            pass
+
+        # 2) Obs fallback
+        try:
+            row = np.asarray(obs[int(agent_slot)], dtype=np.float32)
+            if row.size > 0 and np.isfinite(float(row[0])):
+                return float(row[0])
+        except Exception:
+            pass
+
+        return float(self._last_progress_by_id.get(int(agent_id), 0.0))
+
+    def _apply_pairwise_coordination(self, actions: np.ndarray, obs: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        """Environment-side lightweight pairwise coordination for close agents.
+
+        Returns:
+            adjusted_actions, applied_flag_per_agent(0/1)
+        """
+        out = np.asarray(actions, dtype=np.float32).copy()
+        applied = np.zeros((out.shape[0],), dtype=np.float32) if out.ndim == 2 else np.zeros((0,), dtype=np.float32)
+        if (not self.pairwise_coordination_enabled) or out.ndim != 2 or out.shape[0] <= 1:
+            return out, applied
+
+        obs_arr = np.asarray(obs, dtype=np.float32)
+        if obs_arr.ndim != 2 or obs_arr.shape[0] != out.shape[0] or obs_arr.shape[1] < 2:
+            return out, applied
+
+        # cooldown decay
+        expired = []
+        for k, v in self._pairwise_cooldown.items():
+            nv = int(v) - 1
+            if nv <= 0:
+                expired.append(k)
+            else:
+                self._pairwise_cooldown[k] = nv
+        for k in expired:
+            self._pairwise_cooldown.pop(k, None)
+
+        thr2 = float(self.pairwise_distance_threshold) ** 2
+        n = int(out.shape[0])
+        for i in range(n):
+            xi, yi = float(obs_arr[i, 0]), float(obs_arr[i, 1])
+            for j in range(i + 1, n):
+                xj, yj = float(obs_arr[j, 0]), float(obs_arr[j, 1])
+                dx, dy = xi - xj, yi - yj
+                if (dx * dx + dy * dy) > thr2:
+                    continue
+
+                key = (i, j)
+                if self._pairwise_cooldown.get(key, 0) > 0:
+                    continue
+
+                # simple yielding heuristic based on longitudinal projection in world axes
+                if abs(dx) >= abs(dy):
+                    yield_idx = i if xi < xj else j
+                else:
+                    yield_idx = i if yi < yj else j
+
+                out[yield_idx, 0] = float(np.clip(out[yield_idx, 0] - self.pairwise_brake_scale, -1.0, 1.0))
+                applied[yield_idx] = 1.0
+                self._pairwise_cooldown[key] = int(self.pairwise_cooldown_steps)
+
+        return out, applied
+
+    def _apply_cooperative_reward_mixing(self, rewards: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """Environment-side mixed cooperative reward + lightweight credit shaping.
+
+        Returns:
+            mixed_rewards, cooperative_mix_delta, cooperative_credit_delta
+        """
+        r = np.asarray(rewards, dtype=np.float32)
+        mix_delta = np.zeros_like(r, dtype=np.float32)
+        credit_delta = np.zeros_like(r, dtype=np.float32)
+        if (not self.cooperative_mode) or r.size == 0:
+            return r, mix_delta, credit_delta
+
+        alpha = float(np.clip(self.cooperative_alpha, 0.0, 1.0))
+        team_mean = float(np.mean(r))
+        mixed = (1.0 - alpha) * r + alpha * team_mean
+        mix_delta = (mixed - r).astype(np.float32, copy=False)
+
+        beta = float(np.clip(self.cooperative_credit_coef, 0.0, 1.0))
+        if beta > 0.0 and r.size > 1:
+            others_mean = (float(np.sum(r)) - r) / float(r.size - 1)
+            credit_term = team_mean - others_mean
+            credit_delta = (beta * credit_term).astype(np.float32, copy=False)
+            mixed = mixed + credit_delta
+
+        return mixed.astype(np.float32, copy=False), mix_delta, credit_delta
+
     def step(self, actions: Union[np.ndarray, List[List[float]], List[float]], dt: float = 1.0 / 60.0):
         actions = np.asarray(actions, dtype=np.float32)
 
@@ -383,6 +498,12 @@ class ScenarioEnv:
                     actions = actions.reshape(1, 2)
                 else:
                     raise ValueError(f"Expected actions shape (N,2) for multi-agent, got {actions.shape}")
+
+        # Optional environment-side pairwise coordination before stepping physics.
+        pairwise_applied = np.zeros((actions.shape[0],), dtype=np.float32) if actions.ndim == 2 else np.zeros((0,), dtype=np.float32)
+        if (not self.traffic_flow) and actions.ndim == 2 and actions.shape[0] > 1:
+            obs_now = self._collect_obs()
+            actions, pairwise_applied = self._apply_pairwise_coordination(actions, obs_now)
 
         # Use optimized numpy step if available
         if hasattr(self.env, "step_numpy"):
@@ -404,7 +525,76 @@ class ScenarioEnv:
         terminated = bool(res.terminated)
         truncated = bool(res.truncated)
 
+        py_respawn = np.zeros_like(rewards, dtype=np.float32)
+        py_no_progress = np.zeros_like(rewards, dtype=np.float32)
+        py_max_steps = np.zeros_like(rewards, dtype=np.float32)
+
+        # If respawn is disabled, penalize episodes that end by max-step truncation.
+        if truncated and (not self.respawn_enabled) and rewards.size > 0:
+            rewards = rewards + self.max_steps_penalty_no_respawn
+            py_max_steps += np.float32(self.max_steps_penalty_no_respawn)
+
         collisions = {int(res.agent_ids[i]): str(res.status[i]) for i in range(len(res.status))}
+
+        statuses = list(res.status)
+        agent_ids = list(map(int, getattr(res, "agent_ids", [])))
+
+        # Environment-side shaping: respawn penalty + no-progress window penalty.
+        if rewards.size > 0:
+            # Respawn penalty: apply when previous status was crash and current status is alive/success.
+            # This captures "crash -> respawn" transitions in respawn-enabled mode.
+            if self.respawn_enabled and self.respawn_penalty != 0.0:
+                for i, status in enumerate(statuses):
+                    aid = agent_ids[i] if i < len(agent_ids) else i
+                    prev_status = self._last_status_by_id.get(int(aid), None)
+                    if prev_status in ("CRASH_CAR", "CRASH_WALL") and status not in ("CRASH_CAR", "CRASH_WALL"):
+                        rewards[i] += np.float32(self.respawn_penalty)
+                        py_respawn[i] += np.float32(self.respawn_penalty)
+
+            # No-progress penalty: if progress gain in window is too small, penalize.
+            if self.no_progress_penalty != 0.0 and self.no_progress_window_steps > 0:
+                for i, status in enumerate(statuses):
+                    aid = agent_ids[i] if i < len(agent_ids) else i
+                    if status in ("CRASH_CAR", "CRASH_WALL", "SUCCESS"):
+                        continue
+
+                    cur_prog = self._agent_progress_proxy(i, int(aid), obs)
+                    hist = self._progress_hist_by_id.setdefault(int(aid), deque(maxlen=self.no_progress_window_steps))
+                    if len(hist) == hist.maxlen:
+                        gain = float(cur_prog - hist[0])
+                        if gain < self.no_progress_threshold:
+                            rewards[i] += np.float32(self.no_progress_penalty)
+                            py_no_progress[i] += np.float32(self.no_progress_penalty)
+                    hist.append(float(cur_prog))
+                    self._last_progress_by_id[int(aid)] = float(cur_prog)
+
+            # Update per-agent last status for next step transition checks.
+            for i, status in enumerate(statuses):
+                aid = agent_ids[i] if i < len(agent_ids) else i
+                self._last_status_by_id[int(aid)] = str(status)
+
+        # Cooperative mixing is applied in environment layer.
+        rewards, py_coop_mix, py_coop_credit = self._apply_cooperative_reward_mixing(rewards)
+
+        reward_components_cpp = {
+            "progress": list(map(float, getattr(res, "r_progress", []))),
+            "stuck": list(map(float, getattr(res, "r_stuck", []))),
+            "smooth": list(map(float, getattr(res, "r_smooth", []))),
+            "line": list(map(float, getattr(res, "r_line", []))),
+            "crash_vehicle": list(map(float, getattr(res, "r_crash_vehicle", []))),
+            "crash_wall": list(map(float, getattr(res, "r_crash_wall", []))),
+            "success": list(map(float, getattr(res, "r_success", []))),
+            "team_mix_cpp": list(map(float, getattr(res, "r_team_mix", []))),
+        }
+
+        reward_components_py = {
+            "respawn_penalty": list(map(float, py_respawn.tolist())),
+            "no_progress_penalty": list(map(float, py_no_progress.tolist())),
+            "max_steps_penalty_no_respawn": list(map(float, py_max_steps.tolist())),
+            "cooperative_mix_py": list(map(float, py_coop_mix.tolist())),
+            "cooperative_credit_py": list(map(float, py_coop_credit.tolist())),
+            "pairwise_action_adjust_applied": list(map(float, pairwise_applied.tolist())),
+        }
 
         info = {
             "step": int(res.step),
@@ -414,8 +604,10 @@ class ScenarioEnv:
             "terminated": terminated,
             "truncated": truncated,
             "done": list(res.done),
-            "status": list(res.status),
-            "agent_ids": list(map(int, getattr(res, "agent_ids", []))),
+            "status": statuses,
+            "agent_ids": agent_ids,
+            "reward_components_cpp": reward_components_cpp,
+            "reward_components_py": reward_components_py,
         }
 
         # Update metrics every step (enabled by default)

@@ -25,11 +25,11 @@ from core.env import ScenarioEnv, ROUTE_MAP_BY_SCENARIO
 # show_lidar: True or False
 def main():
     config = {
-        'traffic_flow': False,
+        'traffic_flow': True,
         'traffic_density': 2,
         'traffic_mode': 'stochastic',
         'num_agents':3,
-        'scenario_name': 'T_3lane',
+        'scenario_name': 'highway_2lane',
         'render_mode': 'human',
         'max_steps': 2000,
         'respawn_enabled': True,

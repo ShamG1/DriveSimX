@@ -324,6 +324,15 @@ StepResult ScenarioEnv::step(const std::vector<float>& throttles,
     res.status.assign(n, "ALIVE");
     res.agent_ids = agent_ids;
 
+    res.r_progress.assign(n, 0.0f);
+    res.r_stuck.assign(n, 0.0f);
+    res.r_smooth.assign(n, 0.0f);
+    res.r_line.assign(n, 0.0f);
+    res.r_crash_vehicle.assign(n, 0.0f);
+    res.r_crash_wall.assign(n, 0.0f);
+    res.r_success.assign(n, 0.0f);
+    res.r_team_mix.assign(n, 0.0f);
+
     // --- physics + base reward components (ego only) ---
     for (size_t i = 0; i < n; ++i) {
         if (!cars[i].alive) continue;
@@ -336,6 +345,9 @@ StepResult ScenarioEnv::step(const std::vector<float>& throttles,
         float r_prog = compute_progress(cars[i], reward_config);
         float r_stuck = compute_stuck(cars[i], reward_config);
         float r_smooth = compute_smooth(cars[i], reward_config);
+        res.r_progress[i] = r_prog;
+        res.r_stuck[i] = r_stuck;
+        res.r_smooth[i] = r_smooth;
         res.rewards[i] = r_prog + r_stuck + r_smooth;
     }
 
@@ -533,13 +545,23 @@ StepResult ScenarioEnv::step(const std::vector<float>& throttles,
     for (size_t i = 0; i < n; ++i) {
         // Step penalty for being on yellow line (non-terminal)
         if (res.status[i] == "ON_LINE") {
+            res.r_line[i] += reward_config.k_cl;
             res.rewards[i] += reward_config.k_cl;
         }
 
         if (!res.done[i]) continue;
-        if (res.status[i] == "CRASH_CAR") res.rewards[i] += reward_config.k_cv;
-        else if (res.status[i] == "CRASH_WALL") res.rewards[i] += reward_config.k_cw;
-        else if (res.status[i] == "SUCCESS") res.rewards[i] += reward_config.k_succ;
+        if (res.status[i] == "CRASH_CAR") {
+            res.r_crash_vehicle[i] += reward_config.k_cv;
+            res.rewards[i] += reward_config.k_cv;
+        }
+        else if (res.status[i] == "CRASH_WALL") {
+            res.r_crash_wall[i] += reward_config.k_cw;
+            res.rewards[i] += reward_config.k_cw;
+        }
+        else if (res.status[i] == "SUCCESS") {
+            res.r_success[i] += reward_config.k_succ;
+            res.rewards[i] += reward_config.k_succ;
+        }
     }
 
     // team reward mixing
@@ -548,7 +570,10 @@ StepResult ScenarioEnv::step(const std::vector<float>& throttles,
         for (float r : res.rewards) avg += r;
         avg /= float(n);
         for (size_t i = 0; i < n; ++i) {
-            res.rewards[i] = (1.0f - reward_config.alpha) * res.rewards[i] + reward_config.alpha * avg;
+            const float before = res.rewards[i];
+            const float after = (1.0f - reward_config.alpha) * before + reward_config.alpha * avg;
+            res.r_team_mix[i] += (after - before);
+            res.rewards[i] = after;
         }
     }
 
@@ -615,6 +640,11 @@ StepResult ScenarioEnv::step(const std::vector<float>& throttles,
 
 EnvState ScenarioEnv::get_state() const {
     EnvState s;
+    get_state_into(s);
+    return s;
+}
+
+void ScenarioEnv::get_state_into(EnvState& s) const {
     s.cars.clear();
     s.cars.reserve(cars.size());
     for (const auto& c : cars) s.cars.push_back(c.get_dynamic_state());
@@ -626,7 +656,6 @@ EnvState ScenarioEnv::get_state() const {
     s.agent_ids = agent_ids;
     s.next_agent_id = next_agent_id;
     s.step_count = step_count;
-    return s;
 }
 
 void ScenarioEnv::set_state(const EnvState& s) {
@@ -645,11 +674,15 @@ void ScenarioEnv::set_state(const EnvState& s) {
     next_agent_id = s.next_agent_id;
     step_count = s.step_count;
 
-    // Rebuild lidars to match car counts (counts are assumed unchanged within an episode)
-    lidars.clear();
-    lidars.resize(cars.size());
-    traffic_lidars.clear();
-    traffic_lidars.resize(traffic_cars.size());
+    // Optimized: Only rebuild lidars if car counts changed
+    if (lidars.size() != cars.size()) {
+        lidars.clear();
+        lidars.resize(cars.size());
+    }
+    if (traffic_lidars.size() != traffic_cars.size()) {
+        traffic_lidars.clear();
+        traffic_lidars.resize(traffic_cars.size());
+    }
 }
 
 std::vector<float> ScenarioEnv::get_global_state(int agent_index, int k_nearest) const {

@@ -10,7 +10,7 @@
 namespace py = pybind11;
 
 PYBIND11_MODULE(DRIVESIMX_ENV, m) {
-    m.doc() = "C++ backend for high-speed Scenario";
+    m.doc() = "C++ backend for high-speed Scenario MCTS";
 
     py::class_<State>(m, "State")
         .def(py::init<>())
@@ -49,6 +49,14 @@ PYBIND11_MODULE(DRIVESIMX_ENV, m) {
         .def_readwrite("rewards", &StepResult::rewards)
         .def_readwrite("done", &StepResult::done)
         .def_readwrite("status", &StepResult::status)
+        .def_readwrite("r_progress", &StepResult::r_progress)
+        .def_readwrite("r_stuck", &StepResult::r_stuck)
+        .def_readwrite("r_smooth", &StepResult::r_smooth)
+        .def_readwrite("r_line", &StepResult::r_line)
+        .def_readwrite("r_crash_vehicle", &StepResult::r_crash_vehicle)
+        .def_readwrite("r_crash_wall", &StepResult::r_crash_wall)
+        .def_readwrite("r_success", &StepResult::r_success)
+        .def_readwrite("r_team_mix", &StepResult::r_team_mix)
         .def_readwrite("agent_ids", &StepResult::agent_ids)
         .def_readwrite("agents_alive", &StepResult::agents_alive)
         .def_readwrite("terminated", &StepResult::terminated)

@@ -152,6 +152,9 @@ public:
     EnvState get_state() const;
     void set_state(const EnvState& s);
 
+    // Optimized snapshot API (reduces allocations in tight MCTS loops)
+    void get_state_into(EnvState& out) const;
+
 #ifdef DRIVESIMX_ENABLE_RENDER
     void render(bool show_lane_ids = false, bool show_lidar = false, bool show_connections = false);
     void set_view_mode(int mode);

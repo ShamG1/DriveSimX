@@ -20,6 +20,16 @@ struct StepResult {
     std::vector<int> done;               // (N)
     std::vector<std::string> status;     // (N)
 
+    // Reward decomposition (C++ side, before Python-side shaping)
+    std::vector<float> r_progress;       // progress reward
+    std::vector<float> r_stuck;          // low-speed penalty
+    std::vector<float> r_smooth;         // action smoothness penalty
+    std::vector<float> r_line;           // yellow-line penalty
+    std::vector<float> r_crash_vehicle;  // crash with vehicle penalty
+    std::vector<float> r_crash_wall;     // crash wall/offroad penalty
+    std::vector<float> r_success;        // success bonus
+    std::vector<float> r_team_mix;       // delta introduced by C++ team-mix
+
     // Info parity with Scenario/env.py
     std::vector<long long> agent_ids;    // stable per-agent ids (C++ side)
     int agents_alive{0};

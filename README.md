@@ -192,8 +192,8 @@ config = {
 config = {
     'scenario_name': 'cross_2lane',
     'traffic_flow': False,  # 禁用交通流
-    'num_agents': 4,  # 智能体数量（>1 时默认启用 team reward，无需显式设置）
-    # 'use_team_reward': True,  # 可选：显式覆盖（默认当 num_agents>1 时为 True）
+    'num_agents': 4,  # 智能体数量
+    'use_team_reward': True,  # 是否启用团队奖励混合（默认 False，建议多智能体时按需开启）
     'render_mode': 'human',
     'max_steps': 2000,
 }
@@ -311,7 +311,6 @@ custom_reward_config = {
     'crash_vehicle_penalty': -70.0,      # 与其他车辆碰撞惩罚
     'crash_wall_penalty': -30.0,         # 偏离道路/撞墙惩罚
     'crash_line_penalty': -1.0,          # 越过黄线惩罚（比撞墙更轻）
-    'crash_object_penalty': -30.0,       # 旧版兜底碰撞惩罚（缺少细分键时生效）
     'success_reward': 70.0,              # 到达目标成功奖励
     'action_smoothness_scale': -0.02,    # 动作平滑项系数（抑制突变控制）
     'team_alpha': 0.2,                   # 团队奖励混合权重（个体/团队折中）
@@ -323,26 +322,32 @@ config = {
 ```
 
 ### 奖励组成
-
-**个体奖励** (Individual Reward):
+**1）基础个体奖励**：
 ```
 r_i^ind(t) = r_prog(t) + r_stuck(t) + r_crashV(t) + 
              r_crashW(t) + r_crashL(t) + r_succ(t) + r_smooth(t)
 ```
 
-**团队奖励** (Team Reward, 仅多智能体模式):
+其中各项对应配置键：
+- `r_prog`  ↔ `progress_scale`：前进进度奖励缩放
+- `r_stuck` ↔ `stuck_speed_threshold` + `stuck_penalty`：低速卡住惩罚
+- `r_crashV` ↔ `crash_vehicle_penalty`：车辆碰撞惩罚
+- `r_crashW` ↔ `crash_wall_penalty`：撞墙/离开道路惩罚
+- `r_crashL` ↔ `crash_line_penalty`：压线惩罚
+- `r_succ` ↔ `success_reward`：到达目标奖励
+- `r_smooth` ↔ `action_smoothness_scale`：动作平滑项
+
+**2）团队奖励混合（可选）**：
+当 `use_team_reward=True` 且为多智能体模式时：
 ```
 r_i^mix(t) = (1 - α) * r_i^ind(t) + α * r̄^ind(t)
 ```
+其中 `α` 对应 `team_alpha`。
 
-其中：
-- `r_prog`: 基于距离减少的进度奖励（归一化后乘以 `progress_scale`）
-- `r_stuck`: 速度过低时的卡住惩罚（每步）
-- `r_crashV`: 车辆碰撞惩罚（一次性）
-- `r_crashW`: 撞墙/离开道路惩罚（一次性，通过 `CRASH_WALL` 触发）
-- `r_crashL`: 压黄线/实线惩罚（一次性，通过 `CRASH_LINE` 触发）
-- `r_succ`: 成功到达目标点的奖励（一次性）
-- `r_smooth`: 动作平滑度奖励（基于加速度/转向变化，每步）
+**3）环境附加惩罚**：
+- `max_steps_penalty_no_respawn`：无重生且因步数上限截断时惩罚
+- `respawn_penalty`：启用重生时，碰撞后重生惩罚
+- `no_progress_penalty`：窗口内进度不足惩罚
 
 ---
 

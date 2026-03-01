@@ -13,7 +13,7 @@ struct State {
     float heading{0.0f}; // radians
 };
 
-// Lightweight dynamic state for snapshots
+// Lightweight dynamic state for snapshots/MCTS
 struct CarDynamicState {
     State state;
     float acc{0.0f};
