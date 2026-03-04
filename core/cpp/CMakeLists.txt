@@ -4,14 +4,18 @@ if(POLICY CMP0148)
   cmake_policy(SET CMP0148 OLD)
 endif()
 
-project(DRIVESIMX LANGUAGES CXX CUDA)
+project(DRIVESIMX LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-set(CMAKE_CUDA_STANDARD 17)
-set(CMAKE_CUDA_STANDARD_REQUIRED ON)
-set(CMAKE_CUDA_EXTENSIONS ON)
+option(ENABLE_CUDA "Enable CUDA language support" OFF)
+if(ENABLE_CUDA)
+    enable_language(CUDA)
+    set(CMAKE_CUDA_STANDARD 17)
+    set(CMAKE_CUDA_STANDARD_REQUIRED ON)
+    set(CMAKE_CUDA_EXTENSIONS ON)
+endif()
 
 # ============================================================================
 # 编译优化选项
@@ -78,21 +82,17 @@ endif()
 # Python和pybind11
 # ============================================================================
 
+# Python interpreter discovery (cross-platform).
+# Priority:
+# 1) -DPython3_EXECUTABLE=... from command line
+# 2) active virtual environment / system default
 if(NOT Python3_EXECUTABLE)
-    set(Python3_EXECUTABLE /home/g/anaconda3/envs/g308/bin/python)
+    find_package(Python3 COMPONENTS Interpreter REQUIRED)
+else()
+    find_package(Python3 COMPONENTS Interpreter REQUIRED)
 endif()
 
-execute_process(
-    COMMAND ${Python3_EXECUTABLE} -c "import sysconfig; print(sysconfig.get_path('include'))"
-    OUTPUT_VARIABLE Python3_INCLUDE_DIRS
-    OUTPUT_STRIP_TRAILING_WHITESPACE
-)
-
-execute_process(
-    COMMAND ${Python3_EXECUTABLE} -c "import sysconfig; import os; print(os.path.dirname(sysconfig.get_config_var('LIBDIR') or '/'))"
-    OUTPUT_VARIABLE Python3_LIBRARY_DIRS
-    OUTPUT_STRIP_TRAILING_WHITESPACE
-)
+message(STATUS "Using Python: ${Python3_EXECUTABLE}")
 
 find_package(pybind11 CONFIG QUIET)
 

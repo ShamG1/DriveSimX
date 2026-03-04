@@ -1,17 +1,17 @@
-"""基于 C++ 后端的高性能场景环境（提供 Python 友好 API）。
+"""Fast C++-backed scenario environment with Python-compatible API.
 
-渲染由 C++ OpenGL/GLFW 渲染器负责。
+Rendering is delegated to the C++ OpenGL/GLFW renderer.
 
-说明：
-- 多智能体模式：返回 obs (N,145)、rewards (N,)、terminated、truncated、info。
-- traffic_flow 模式（单智能体）：返回 obs (145,)、reward 标量、terminated、truncated、info。
+Notes:
+- Multi-agent mode: returns obs (N,145), rewards (N,), terminated, truncated, info.
+- traffic_flow mode (single-agent): returns obs (145,), reward scalar, terminated, truncated, info.
 """
 from __future__ import annotations
 
 import os
 import re
 import sys
-from typing import Any, Dict, List, Union
+from typing import Any, Dict, List, Union, Optional
 from collections import deque
 
 import numpy as np
@@ -50,7 +50,12 @@ def _apply_reward_config(env: Any, reward_cfg: Dict[str, Any]) -> None:
     if "action_smoothness_scale" in reward_cfg:
         rc.k_sm = float(reward_cfg["action_smoothness_scale"])
     if "team_alpha" in reward_cfg:
+        # Backward-compatible legacy field.
         rc.alpha = float(reward_cfg["team_alpha"])
+    if "team_alpha_shaping" in reward_cfg:
+        rc.alpha_shaping = float(reward_cfg["team_alpha_shaping"])
+    if "team_alpha_terminal" in reward_cfg:
+        rc.alpha_terminal = float(reward_cfg["team_alpha_terminal"])
 
 
 def _parse_num_lanes_from_scenario_name(name: str) -> int:
@@ -195,16 +200,42 @@ class ScenarioEnv:
         self.show_lane_ids = bool(config.get("show_lane_ids", False))
         self.show_lidar = bool(config.get("show_lidar", False))
 
-        # 是否启用团队奖励混合：默认关闭，可通过配置显式开启。
-        # 注意：traffic_flow（单智能体）模式下会强制关闭团队奖励。
+        # Determine use_team_reward: default to False.
+        # Allow explicit override from config if present.
         use_team = bool(config.get("use_team_reward", False))
         if self.traffic_flow:
             use_team = False
 
         self.respawn_enabled = bool(config.get("respawn_enabled", True))
+        # Episode termination policy when respawn is disabled:
+        # - "any_done": terminate env when any agent is done (legacy behavior)
+        # - "all_done": terminate env only when all agents are done
+        self.termination_mode = str(config.get("termination_mode", "all_done")).strip().lower()
+        if self.termination_mode not in ("any_done", "all_done"):
+            raise ValueError(f"termination_mode must be 'any_done' or 'all_done', got {self.termination_mode!r}")
+
         respawn = self.respawn_enabled
         max_steps = int(config.get("max_steps_per_episode", config.get("max_steps", 2000)))
         self.max_steps = max_steps
+
+        # Time scale:
+        # - sim_dt: physics + control step duration (seconds), default 1/60
+        # - No action-repeat by default; one env.step = one physics/control step.
+        self.sim_dt = float(config.get("sim_dt", 1.0 / 60.0))
+        if self.sim_dt <= 0.0:
+            raise ValueError(f"sim_dt must be > 0, got {self.sim_dt}")
+
+        # Optional legacy compatibility: if control_hz is provided, reinterpret sim_dt accordingly.
+        # (Still no repeat; we directly change dt.)
+        control_hz_cfg: Optional[float] = config.get("control_hz", None)
+        if control_hz_cfg is not None:
+            control_hz = float(control_hz_cfg)
+            if control_hz <= 0.0:
+                raise ValueError(f"control_hz must be > 0, got {control_hz}")
+            self.sim_dt = 1.0 / control_hz
+
+        self.control_dt_effective = self.sim_dt
+
         # Penalty applied only when respawn is disabled and episode is truncated by max steps.
         self.max_steps_penalty_no_respawn = float(
             config.get("max_steps_penalty_no_respawn", DEFAULT_REWARD_CONFIG.get("max_steps_penalty_no_respawn", -5.0))
@@ -486,7 +517,7 @@ class ScenarioEnv:
 
         return mixed.astype(np.float32, copy=False), mix_delta, credit_delta
 
-    def step(self, actions: Union[np.ndarray, List[List[float]], List[float]], dt: float = 1.0 / 60.0):
+    def step(self, actions: Union[np.ndarray, List[List[float]], List[float]], dt: Optional[float] = None):
         actions = np.asarray(actions, dtype=np.float32)
 
         # Accept both (2,) and (1,2) for single-agent manual control
@@ -505,11 +536,21 @@ class ScenarioEnv:
             obs_now = self._collect_obs()
             actions, pairwise_applied = self._apply_pairwise_coordination(actions, obs_now)
 
-        # Use optimized numpy step if available
+        # One env.step = one physics/control step with dt.
+        # No action-repeat path: directly control temporal scale via dt (or sim_dt default).
+        try:
+            step_dt = float(dt)
+        except Exception:
+            step_dt = self.sim_dt
+        if step_dt <= 0.0:
+            step_dt = self.sim_dt
+
         if hasattr(self.env, "step_numpy"):
-            res = self.env.step_numpy(actions, float(dt))
+            res = self.env.step_numpy(actions, float(step_dt))
         else:
-            res = self.env.step(actions[:, 0].tolist(), actions[:, 1].tolist(), float(dt))
+            res = self.env.step(actions[:, 0].tolist(), actions[:, 1].tolist(), float(step_dt))
+
+        actual_elapsed_dt = step_dt
 
         if self.traffic_flow:
             try:
@@ -517,13 +558,25 @@ class ScenarioEnv:
             except Exception:
                 self.traffic_cars = []
 
-        # Optimization: res.obs from C++ is often a copy. 
+        # Optimization: res.obs from C++ is often a copy.
         # We prefer using the zero-copy observations buffer which is already updated in step().
         obs = self._collect_obs()
 
         rewards = np.asarray(res.rewards, dtype=np.float32)
         terminated = bool(res.terminated)
         truncated = bool(res.truncated)
+
+        # Override legacy C++ any-done termination when respawn is disabled,
+        # so multi-agent cooperation can continue until all agents are done.
+        if (not self.respawn_enabled) and self.termination_mode == "all_done":
+            try:
+                done_flags = list(getattr(res, "done", []))
+                if done_flags:
+                    terminated = bool(all(bool(x) for x in done_flags))
+                else:
+                    terminated = False
+            except Exception:
+                terminated = False
 
         py_respawn = np.zeros_like(rewards, dtype=np.float32)
         py_no_progress = np.zeros_like(rewards, dtype=np.float32)
@@ -612,7 +665,7 @@ class ScenarioEnv:
 
         # Update metrics every step (enabled by default)
         if self.metrics_enabled:
-            self.metrics_tracker.update(float(dt), info)
+            self.metrics_tracker.update(float(actual_elapsed_dt), info)
 
             end_reason = None
             if truncated:

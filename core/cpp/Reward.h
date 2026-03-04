@@ -11,7 +11,16 @@ struct RewardConfig {
     float k_cl{-1.0f};    // Crash Line (Yellow line)
     float k_succ{100.0f};
     float k_sm{-0.02f};
+
+    // Legacy team mixing coefficient (kept for backward compatibility).
+    // If only this is configured, it is treated as shaping mix strength.
     float alpha{0.2f};
+
+    // Recommended split coefficients:
+    // - alpha_shaping: mix dense shaping terms (progress/stuck/smooth/line)
+    // - alpha_terminal: mix sparse terminal terms (success/crash), default OFF
+    float alpha_shaping{0.2f};
+    float alpha_terminal{0.0f};
 };
 
 struct StepResult {

@@ -13,26 +13,29 @@ void Car::refresh_pose_cache() {
 }
 
 void Car::update(float throttle, float steer_input, float dt) {
-    // Match Scenario.agent.Car.update
-    // 1) map inputs
+    // Continuous-time integration with SI-consistent units.
+    // state.v is in px/s, acc is in px/s^2, and position integration uses dt.
     acc = throttle * MAX_ACC;
 
     float target_steering = steer_input * MAX_STEERING_ANGLE;
     steering_angle += (target_steering - steering_angle) * 0.2f;
 
+    // Simple drag when no throttle; scaled by dt to remain time-consistent.
     if (throttle == 0.0f) {
-        state.v *= 0.95f;
+        constexpr float DRAG_PER_SEC = 3.0f;
+        const float decay = std::exp(-DRAG_PER_SEC * std::max(0.0f, dt));
+        state.v *= decay;
     }
 
-    // 2) speed update (speed is px/frame, but acc is px/s^2; dt is 1/60)
+    // Speed integration.
     state.v += acc * dt;
     if (state.v < 0.0f) state.v = 0.0f;
     if (state.v > PHYSICS_MAX_SPEED) state.v = PHYSICS_MAX_SPEED;
 
-    // heading update (bicycle model)
+    // Heading integration (bicycle model).
     if (std::fabs(state.v) > 0.1f) {
-        float ang_vel = (state.v / WHEELBASE) * std::tan(steering_angle);
-        state.heading += ang_vel;
+        float ang_vel = (state.v / WHEELBASE) * std::tan(steering_angle); // rad/s
+        state.heading += ang_vel * dt;
     }
 
     // wrap [-pi,pi]
@@ -43,9 +46,9 @@ void Car::update(float throttle, float steer_input, float dt) {
     // Refresh cached trig after heading update
     refresh_pose_cache();
 
-    // 3) position update (NO dt in python)
-    state.x += state.v * cached_cosH;
-    state.y -= state.v * cached_sinH;
+    // Position integration.
+    state.x += state.v * cached_cosH * dt;
+    state.y -= state.v * cached_sinH * dt;
 }
 
 void Car::set_path(std::vector<std::pair<float, float>> p) {

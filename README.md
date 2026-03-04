@@ -86,36 +86,55 @@
 
 #### 构建依赖
 
+- `Python >= 3.9`
 - `CMake >= 3.18`
 - 支持 `C++17` 的编译器（Linux: GCC/Clang；Windows: MSVC）
 - `OpenGL`
-- `GLFW`（Linux 下 CMake 会 `find_package(glfw3 3.3 REQUIRED)`）
-- `PyTorch`（用于提供 C++ 侧 `LibTorch`，CMake 会通过 Python 自动定位 Torch 的 CMake 配置）
+- `GLFW`
+- `PyTorch`（用于提供 C++ 侧 `LibTorch`，CMake 会通过当前 Python 自动定位 Torch 的 CMake 配置）
 
-#### 1. 编译 C++ 后端
+> 说明：
+> - Linux 下 CMake 使用 `find_package(glfw3 3.3 REQUIRED)`。
+> - Windows 下默认从 `core/TOOLS/glfw-3.4.bin.WIN64` 查找 GLFW（可通过 `-DGLFW_ROOT=...` 覆盖）。
+> - 默认 **不要求 CUDA**；如需启用可在 CMake 传入 `-DENABLE_CUDA=ON`。
 
-```bash
-cd core/cpp
-mkdir -p build && cd build
-cmake -DCMAKE_BUILD_TYPE=Release ..
-# Linux
-make -j$(nproc)
-# Windows (MSVC)
-cmake --build . --config Release
-```
-
-#### 2. pip 安装本环境 (推荐开发模式)
+#### 1. 安装 Python 依赖
 
 在项目根目录执行：
+
+```bash
+pip install -r requirements.txt
+```
+
+开发模式安装（推荐）：
 
 ```bash
 pip install -e .
 ```
 
-也可以仅安装 Python 依赖：
+#### 2. 编译 C++ 后端
+
+Linux:
 
 ```bash
-pip install -r requirements.txt
+cd core/cpp
+mkdir -p build && cd build
+cmake -DCMAKE_BUILD_TYPE=Release ..
+cmake --build . -j$(nproc)
+```
+
+Windows (MSVC, x64 Native Tools Command Prompt):
+
+```bash
+cd core/cpp
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build --config Release
+```
+
+如果你的 Python 不在默认环境中，可显式指定：
+
+```bash
+cmake -S . -B build -DPython3_EXECUTABLE="<your-python-path>"
 ```
 
 #### 3. 运行测试

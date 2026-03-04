@@ -248,6 +248,8 @@ struct Renderer::Impl {
 
     // Perception visualization
     int selected_agent_idx{0};
+    bool route_focus_npc{false};
+    int route_focus_npc_idx{0};
     bool show_connections{false};
     bool show_lidar{false};
     bool show_lane_ids{false};
@@ -798,23 +800,70 @@ void Renderer::render(const ScenarioEnv& env, bool show_lane_ids, bool show_lida
     }
     v_was_down = v_is_down;
 
-    // Selected agent switching via 'TAB' key: cycle through ALIVE ego agents only
+    // Route focus switching via 'TAB' key:
+    // - Prefer cycling ALIVE ego agents.
+    // - If only one ego agent exists, the next TAB after ego will consider NPCs.
     static bool tab_was_down = false;
     bool tab_is_down = glfwGetKey(impl->window, GLFW_KEY_TAB) == GLFW_PRESS;
     if (tab_is_down && !tab_was_down) {
         const int n = (int)env.cars.size();
-        if (n > 0) {
-            int next_idx = impl->selected_agent_idx;
-            bool found = false;
+        const int tn = (int)env.traffic_cars.size();
+
+        auto next_alive_ego = [&](int cur) -> int {
+            if (n <= 0) return -1;
+            int start = std::max(0, std::min(cur, n - 1));
             for (int i = 1; i <= n; ++i) {
-                int test_idx = (impl->selected_agent_idx + i) % n;
-                if (env.cars[(size_t)test_idx].alive) {
-                    next_idx = test_idx;
-                    found = true;
-                    break;
+                int idx = (start + i) % n;
+                if (env.cars[(size_t)idx].alive) return idx;
+            }
+            return -1;
+        };
+
+        auto first_alive_ego = [&]() -> int {
+            for (int i = 0; i < n; ++i) if (env.cars[(size_t)i].alive) return i;
+            return -1;
+        };
+
+        auto next_alive_npc = [&](int cur) -> int {
+            if (tn <= 0) return -1;
+            int start = std::max(0, std::min(cur, tn - 1));
+            for (int i = 1; i <= tn; ++i) {
+                int idx = (start + i) % tn;
+                if (env.traffic_cars[(size_t)idx].alive) return idx;
+            }
+            return -1;
+        };
+
+        auto first_alive_npc = [&]() -> int {
+            for (int i = 0; i < tn; ++i) if (env.traffic_cars[(size_t)i].alive) return i;
+            return -1;
+        };
+
+        if (!impl->route_focus_npc) {
+            // Ego-focused currently: always try ego cycling first.
+            int next_ego = next_alive_ego(impl->selected_agent_idx);
+            if (next_ego >= 0 && next_ego != impl->selected_agent_idx) {
+                impl->selected_agent_idx = next_ego;
+            } else if (n == 1) {
+                // Only one ego: next TAB can switch to NPC focus.
+                int npc0 = first_alive_npc();
+                if (npc0 >= 0) {
+                    impl->route_focus_npc = true;
+                    impl->route_focus_npc_idx = npc0;
                 }
             }
-            if (found) impl->selected_agent_idx = next_idx;
+        } else {
+            // NPC-focused currently: cycle NPCs; fallback to ego focus.
+            int next_npc = next_alive_npc(impl->route_focus_npc_idx);
+            if (next_npc >= 0 && next_npc != impl->route_focus_npc_idx) {
+                impl->route_focus_npc_idx = next_npc;
+            } else {
+                int ego0 = first_alive_ego();
+                if (ego0 >= 0) {
+                    impl->route_focus_npc = false;
+                    impl->selected_agent_idx = ego0;
+                }
+            }
         }
     }
     tab_was_down = tab_is_down;
@@ -1143,8 +1192,10 @@ void Renderer::draw_lane_ids(const ScenarioEnv& env) const{
         const bool is_in = id.rfind("IN_", 0) == 0;
 
         // Convert logical px to framebuffer px
-        float fb_x = (float)vp_x + (p.first - impl->v_min_x) * (float)vp_w / (impl->v_max_x - impl->v_min_x);
-        float fb_y = (float)vp_y + (p.second - impl->v_min_y) * (float)vp_h / (impl->v_max_y - impl->v_min_y);
+        const float vp_w = (float)view;
+        const float vp_h = (float)view;
+        float fb_x = (float)vp_x + (p.first - impl->v_min_x) * vp_w / (impl->v_max_x - impl->v_min_x);
+        float fb_y = (float)vp_y + (p.second - impl->v_min_y) * vp_h / (impl->v_max_y - impl->v_min_y);
 
         // Center text
         SIZE text_size;
@@ -1180,7 +1231,8 @@ void Renderer::draw_hud(const ScenarioEnv& env) const{
     }
 
     if(!env.cars.empty() && env.cars[0].alive){
-        float speed_ms = (env.cars[0].state.v * FPS) / SCALE;
+        // state.v is px/s (see Car::update), so convert to m/s by dividing SCALE (px/m).
+        float speed_ms = env.cars[0].state.v / SCALE;
         char buf[64];
         std::snprintf(buf, sizeof(buf), " | SPEED: %.1f M/S", speed_ms);
         lidar_line += buf;
@@ -1291,19 +1343,21 @@ void Renderer::draw_lane_ids(const ScenarioEnv& env) const {
 void Renderer::draw_hud(const ScenarioEnv& env) const {
     if (!imgui || !impl || !impl->window) return;
 
-    // Use ImGui for a professional HUD overlay
+    int full_w = 0, full_h = 0;
+    glfwGetFramebufferSize(impl->window, &full_w, &full_h);
+
+    // Left-top: simulation status HUD
     ImGui::SetNextWindowPos(ImVec2(10, 10), ImGuiCond_Always);
-    ImGui::SetNextWindowBgAlpha(0.35f); // Semi-transparent background
-    
-    ImGui::Begin("Simulation HUD", nullptr, 
-        ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize | 
+    ImGui::SetNextWindowBgAlpha(0.35f);
+
+    ImGui::Begin("Simulation HUD", nullptr,
+        ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize |
         ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoNav);
 
-    // Header with primary stats
     ImGui::TextColored(ImVec4(0.0f, 0.9f, 1.0f, 1.0f), "STEP: %d", env.step_count);
     ImGui::SameLine();
     ImGui::Text(" | AGENTS: %d", (int)env.cars.size());
-    
+
     if (env.traffic_flow) {
         ImGui::SameLine();
         ImGui::Text(" | TRAFFIC: %d", (int)env.traffic_cars.size());
@@ -1311,7 +1365,6 @@ void Renderer::draw_hud(const ScenarioEnv& env) const {
 
     ImGui::Separator();
 
-    // FPS Counter (derived from internal state if available, or just render frequency)
     static float last_time = 0.0f;
     float current_time = (float)glfwGetTime();
     float dt = current_time - last_time;
@@ -1320,27 +1373,52 @@ void Renderer::draw_hud(const ScenarioEnv& env) const {
     if (dt > 0) avg_fps = avg_fps * 0.9f + (1.0f / dt) * 0.1f;
     ImGui::Text("RENDER FPS: %.1f", avg_fps);
 
-    // Detailed Ego Status (Agent 0)
     if (!env.cars.empty()) {
         const auto& ego = env.cars[0];
         ImVec4 status_col = ego.alive ? ImVec4(0.2f, 1.0f, 0.2f, 1.0f) : ImVec4(1.0f, 0.2f, 0.2f, 1.0f);
-        
+
         ImGui::Text("EGO STATUS: ");
         ImGui::SameLine();
         ImGui::TextColored(status_col, "%s", ego.alive ? "ACTIVE" : "COLLIDED");
 
-        float speed_ms = (ego.state.v * FPS) / SCALE;
+        // state.v is px/s (see Car::update), so convert to m/s by dividing SCALE (px/m).
+        float speed_ms = ego.state.v / SCALE;
         ImGui::Text("SPEED: %.2f m/s", speed_ms);
-        
-        // Progress / Pos
         ImGui::Text("POS: (%.1f, %.1f)", ego.state.x, ego.state.y);
     }
 
-    // View Mode Toggle Hint
     ImGui::Separator();
     const char* view_names[] = {"2D TOP", "3D FOLLOW", "3D ORBIT"};
     ImGui::Text("VIEW: [%s]", view_names[std::clamp(impl->view_mode, 0, 2)]);
     ImGui::TextDisabled("(Press V to switch)");
+
+    ImGui::End();
+
+    // Right-top: key bindings help panel
+    // Width is fixed for stable layout; anchored to right side.
+    const float help_w = 320.0f;
+    ImGui::SetNextWindowSize(ImVec2(help_w, 0.0f), ImGuiCond_Always);
+    ImGui::SetNextWindowPos(ImVec2(std::max(10.0f, (float)full_w - help_w - 10.0f), 10.0f), ImGuiCond_Always);
+    ImGui::SetNextWindowBgAlpha(0.35f);
+
+    ImGui::Begin("Controls", nullptr,
+        ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize |
+        ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoNav);
+
+    ImGui::TextColored(ImVec4(1.0f, 0.9f, 0.3f, 1.0f), "TEST.PY CONTROLS");
+    ImGui::BulletText("UP / DOWN: throttle");
+    ImGui::BulletText("LEFT / RIGHT: steering");
+    ImGui::BulletText("TAB: switch controlled agent");
+    ImGui::BulletText("R: reset environment");
+    ImGui::BulletText("O: toggle observation logging");
+    ImGui::BulletText("V: cycle view mode");
+    ImGui::BulletText("ESC / Q: quit");
+
+    ImGui::Separator();
+    ImGui::TextColored(ImVec4(0.6f, 0.9f, 1.0f, 1.0f), "RENDERER BUILT-IN");
+    ImGui::BulletText("C: toggle connections");
+    ImGui::BulletText("L: toggle lidar visualization");
+    ImGui::BulletText("I: toggle lane IDs");
 
     ImGui::End();
 }
@@ -1350,9 +1428,132 @@ void Renderer::draw_hud(const ScenarioEnv& env) const {
 
 // ROUTE ---------------------------------------------------
 void Renderer::draw_route(const ScenarioEnv& env) const{
-    (void)env;
-    // Intentionally left empty: route/navigation visualization is not implemented yet.
-    // This function previously drew ego-to-other-agent connection lines, which is now handled by draw_connections().
+    if (!impl) return;
+
+    const Car* route_car = nullptr;
+
+    if (impl->route_focus_npc) {
+        const int tn = (int)env.traffic_cars.size();
+        if (tn > 0) {
+            int idx = impl->route_focus_npc_idx;
+            if (idx < 0) idx = 0;
+            if (idx >= tn) idx = tn - 1;
+
+            if (!env.traffic_cars[(size_t)idx].alive) {
+                bool found = false;
+                for (int i = 0; i < tn; ++i) {
+                    int cand = (idx + i) % tn;
+                    if (env.traffic_cars[(size_t)cand].alive) {
+                        idx = cand;
+                        found = true;
+                        break;
+                    }
+                }
+                if (!found) {
+                    impl->route_focus_npc = false;
+                } else {
+                    impl->route_focus_npc_idx = idx;
+                }
+            }
+
+            if (impl->route_focus_npc && env.traffic_cars[(size_t)impl->route_focus_npc_idx].alive) {
+                route_car = &env.traffic_cars[(size_t)impl->route_focus_npc_idx];
+            }
+        } else {
+            impl->route_focus_npc = false;
+        }
+    }
+
+    // Fallback/default: selected ego route
+    if (!route_car) {
+        const int n = (int)env.cars.size();
+        if (n <= 0) return;
+
+        int idx = impl->selected_agent_idx;
+        if (idx < 0) idx = 0;
+        if (idx >= n) idx = n - 1;
+
+        if (!env.cars[(size_t)idx].alive) {
+            bool found = false;
+            for (int i = 0; i < n; ++i) {
+                int cand = (idx + i) % n;
+                if (env.cars[(size_t)cand].alive) {
+                    idx = cand;
+                    found = true;
+                    break;
+                }
+            }
+            if (!found) return;
+            impl->selected_agent_idx = idx;
+        }
+
+        route_car = &env.cars[(size_t)impl->selected_agent_idx];
+    }
+
+    if (!route_car || route_car->path.size() < 2) return;
+
+    const int cur_i = std::max(0, std::min(route_car->path_index, (int)route_car->path.size() - 1));
+
+    if (impl->view_mode == VIEW_2D) {
+        glDisable(GL_LIGHTING);
+        glLineWidth(4.0f);
+
+        glColor4f(0.25f, 0.55f, 1.0f, 0.35f);
+        glBegin(GL_LINE_STRIP);
+        for (int i = 0; i <= cur_i; ++i) {
+            const auto& p = route_car->path[(size_t)i];
+            glVertex2f(ndc_x(p.first, impl->v_min_x, impl->v_max_x),
+                       ndc_y(p.second, impl->v_min_y, impl->v_max_y));
+        }
+        glEnd();
+
+        glColor4f(0.05f, 0.95f, 0.95f, 0.95f);
+        glBegin(GL_LINE_STRIP);
+        for (size_t i = (size_t)cur_i; i < route_car->path.size(); ++i) {
+            const auto& p = route_car->path[i];
+            glVertex2f(ndc_x(p.first, impl->v_min_x, impl->v_max_x),
+                       ndc_y(p.second, impl->v_min_y, impl->v_max_y));
+        }
+        glEnd();
+
+        const auto& goal = route_car->path.back();
+        draw_circle_px(goal.first, goal.second, 6.0f, 20, 0.10f, 1.00f, 0.25f,
+                       impl->v_min_x, impl->v_max_x, impl->v_min_y, impl->v_max_y);
+    } else {
+        glDisable(GL_LIGHTING);
+        glLineWidth(3.0f);
+
+        glColor4f(0.25f, 0.55f, 1.0f, 0.30f);
+        glBegin(GL_LINE_STRIP);
+        for (int i = 0; i <= cur_i; ++i) {
+            const auto& p = route_car->path[(size_t)i];
+            glVertex3f(p.first, -0.15f, p.second);
+        }
+        glEnd();
+
+        glColor4f(0.05f, 0.95f, 0.95f, 0.95f);
+        glBegin(GL_LINE_STRIP);
+        for (size_t i = (size_t)cur_i; i < route_car->path.size(); ++i) {
+            const auto& p = route_car->path[i];
+            glVertex3f(p.first, -0.15f, p.second);
+        }
+        glEnd();
+
+        const auto& goal = route_car->path.back();
+        glColor4f(0.10f, 1.00f, 0.25f, 0.95f);
+        constexpr int SEG = 28;
+        constexpr float R = 7.0f;
+        glBegin(GL_LINE_LOOP);
+        for (int s = 0; s < SEG; ++s) {
+            float a = 2.0f * 3.14159265358979323846f * float(s) / float(SEG);
+            float gx = goal.first + R * std::cos(a);
+            float gy = goal.second + R * std::sin(a);
+            glVertex3f(gx, -0.12f, gy);
+        }
+        glEnd();
+
+        glEnable(GL_LIGHTING);
+    }
 }
 
 // CONNECTIONS ---------------------------------------------

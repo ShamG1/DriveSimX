@@ -41,12 +41,11 @@ static inline float compute_progress(Car &car, const RewardConfig& cfg) {
 }
 
 static inline float compute_stuck(const Car &car, const RewardConfig &cfg) {
-    float speed_ms = (car.state.v * FPS) / SCALE;
+    // state.v is px/s, convert directly to m/s.
+    float speed_ms = car.state.v / SCALE;
     if (speed_ms >= cfg.v_min_ms) return 0.0f;
     // Continuous shaping: penalize proportional to how far below v_min we are.
     float diff = cfg.v_min_ms - speed_ms; // >= 0
-    // A small scaling keeps magnitude comparable to the old constant penalty.
-    // For example, diff in [0, 1] -> penalty in approximately [0, |k_stuck|].
     return cfg.k_stuck * diff;
 }
 
@@ -564,16 +563,58 @@ StepResult ScenarioEnv::step(const std::vector<float>& throttles,
         }
     }
 
-    // team reward mixing
+    // Team reward mixing (improved):
+    // - Mix shaping terms only by default.
+    // - Keep terminal terms (success/crash) unmixed unless alpha_terminal > 0.
+    // - Mix over active agents only (alive and non-terminal this step).
     if (use_team_reward && n > 0) {
-        float avg = 0.0f;
-        for (float r : res.rewards) avg += r;
-        avg /= float(n);
+        auto clamp01 = [](float x) {
+            if (x < 0.0f) return 0.0f;
+            if (x > 1.0f) return 1.0f;
+            return x;
+        };
+
+        // Backward compatibility:
+        // If caller only sets legacy alpha, use it as shaping alpha.
+        float alpha_shaping = reward_config.alpha_shaping;
+        if (std::fabs(alpha_shaping - 0.2f) < 1e-6f && std::fabs(reward_config.alpha - 0.2f) > 1e-6f) {
+            alpha_shaping = reward_config.alpha;
+        }
+        alpha_shaping = clamp01(alpha_shaping);
+        const float alpha_terminal = clamp01(reward_config.alpha_terminal);
+
+        std::vector<int> active_idx;
+        active_idx.reserve(n);
         for (size_t i = 0; i < n; ++i) {
-            const float before = res.rewards[i];
-            const float after = (1.0f - reward_config.alpha) * before + reward_config.alpha * avg;
-            res.r_team_mix[i] += (after - before);
-            res.rewards[i] = after;
+            const bool active = cars[i].alive && !res.done[i];
+            if (active) active_idx.push_back((int)i);
+        }
+
+        // No active agent => skip mixing.
+        if (!active_idx.empty()) {
+            float shaping_avg = 0.0f;
+            float terminal_avg = 0.0f;
+
+            for (int idx : active_idx) {
+                const float shaping_i = res.r_progress[idx] + res.r_stuck[idx] + res.r_smooth[idx] + res.r_line[idx];
+                const float terminal_i = res.r_crash_vehicle[idx] + res.r_crash_wall[idx] + res.r_success[idx];
+                shaping_avg += shaping_i;
+                terminal_avg += terminal_i;
+            }
+            shaping_avg /= float(active_idx.size());
+            terminal_avg /= float(active_idx.size());
+
+            for (int idx : active_idx) {
+                const float shaping_i = res.r_progress[idx] + res.r_stuck[idx] + res.r_smooth[idx] + res.r_line[idx];
+                const float terminal_i = res.r_crash_vehicle[idx] + res.r_crash_wall[idx] + res.r_success[idx];
+
+                const float shaping_mixed = (1.0f - alpha_shaping) * shaping_i + alpha_shaping * shaping_avg;
+                const float terminal_mixed = (1.0f - alpha_terminal) * terminal_i + alpha_terminal * terminal_avg;
+                const float mixed_total = shaping_mixed + terminal_mixed;
+
+                res.r_team_mix[idx] += (mixed_total - res.rewards[idx]);
+                res.rewards[idx] = mixed_total;
+            }
         }
     }
 

@@ -65,3 +65,32 @@ def State(*args, **kwargs):
 
 def Lidar(*args, **kwargs):
     return _require().Lidar(*args, **kwargs)
+
+
+# Expose C++ MCTS search
+def mcts_search(*args, **kwargs):
+    return _require().mcts_search(*args, **kwargs)
+
+
+def mcts_search_lstm(*args, **kwargs):
+    return _require().mcts_search_lstm(*args, **kwargs)
+
+
+def mcts_search_lstm_torchscript(*args, **kwargs):
+    return _require().mcts_search_lstm_torchscript(*args, **kwargs)
+
+
+def mcts_search_tcn_torchscript_seq_to_shm(*args, **kwargs):
+    return _require().mcts_search_tcn_torchscript_seq_to_shm(*args, **kwargs)
+
+
+def mcts_search_tcn_torchscript_seq_to_shm_np(*args, **kwargs):
+    return _require().mcts_search_tcn_torchscript_seq_to_shm_np(*args, **kwargs)
+
+
+def mcts_search_to_shm(*args, **kwargs):
+    return _require().mcts_search_to_shm(*args, **kwargs)
+
+
+def mcts_search_to_shm_np(*args, **kwargs):
+    return _require().mcts_search_to_shm_np(*args, **kwargs)

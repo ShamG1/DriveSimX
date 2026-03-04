@@ -1,4 +1,3 @@
-from re import T
 import numpy as np
 import random
 import sys
@@ -26,13 +25,14 @@ from core.env import ScenarioEnv, ROUTE_MAP_BY_SCENARIO
 def main():
     config = {
         'traffic_flow': True,
-        'traffic_density': 2,
+        'traffic_density': 0.1,
         'traffic_mode': 'stochastic',
-        'num_agents':3,
-        'scenario_name': 'highway_2lane',
+        'num_agents': 3,
+        'scenario_name': 'cross_2lane',
         'render_mode': 'human',
         'max_steps': 2000,
         'respawn_enabled': True,
+        'sim_dt': 1.0 / 10.0,
     }
 
     env = ScenarioEnv(config)
@@ -110,7 +110,6 @@ def main():
     last_toggle_o = 0.0
     last_toggle_tab = 0.0
 
-    target_dt = 1.0 / 60.0
     last_t = time.perf_counter()
 
     intent_labels = {0: "STRAIGHT", 1: "LEFT", 2: "RIGHT"}
@@ -198,18 +197,9 @@ def main():
         action[controlled_idx, 0] = throttle
         action[controlled_idx, 1] = steer
 
-        # Advance simulation time using real elapsed time, but integrate with fixed substeps
-        remaining = frame_dt
-        obs = None
-        reward = 0.0
-        terminated = False
-        truncated = False
-        info = {}
-        while remaining > 1e-9 and not (terminated or truncated):
-            dt = remaining if remaining < target_dt else target_dt
-            remaining -= dt
-            obs, r, terminated, truncated, info = env.step(action, dt=dt)
-            reward += float(np.sum(r))
+        # One control tick per render frame; env handles internal sim sub-steps via sim_dt/control_hz.
+        obs, r, terminated, truncated, info = env.step(action)
+        reward = float(np.sum(r))
         total_reward += reward
         done = terminated or truncated
 

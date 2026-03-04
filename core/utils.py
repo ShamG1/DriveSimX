@@ -10,26 +10,26 @@ LANE_WIDTH_PX = int(LANE_WIDTH_M * SCALE)
 
 OBS_DIM = 145
 
-# 默认奖励配置（可通过 config 字典覆盖）
+# Default reward config (can be overridden via config dict)
 DEFAULT_REWARD_CONFIG = {
-    'use_team_reward': False,  # 是否启用团队奖励混合（多智能体可选）
-    'traffic_flow': False,      # 若为 True，则为交通流单智能体模式，使用个体奖励
-    # 仅在 respawn_enabled=False 且因 max_steps_per_episode 截断时生效。
+    'use_team_reward': False,  # Use team reward mixing (for multi-agent)
+    'traffic_flow': False,      # If True, forces individual reward (single-agent with traffic)
+    # Applied when respawn_enabled=False and episode is truncated by max_steps_per_episode.
     'max_steps_penalty_no_respawn': -5.0,
-    # 在 respawn_enabled=True 时，车辆碰撞后重生施加的惩罚。
+    # Applied when respawn_enabled=True and a car respawns after a crash.
     'respawn_penalty': -0.5,
-    # 在窗口内进度增量低于阈值时施加的惩罚。
-    'no_progress_penalty': -0.2,
+    # Applied when progress gain in a window is below threshold.
+    'no_progress_penalty': -0.02,
     'reward_config': {
-        'progress_scale': 60.0,          # 前进进度奖励缩放系数
-        'stuck_speed_threshold': 1.0,    # 卡住判定速度阈值（m/s）
-        'stuck_penalty': -0.08,          # 卡住惩罚
-        'crash_vehicle_penalty': -30,    # 车辆碰撞惩罚
-        'crash_wall_penalty': -8.0,      # 撞墙/离开道路惩罚
-        'crash_line_penalty': -0.5,      # 压线惩罚（通常轻于撞墙）
-        'success_reward': 100.0,         # 到达目标奖励
-        'action_smoothness_scale': -0.005,  # 动作平滑项系数
-        'team_alpha': 0.2,               # 团队奖励混合系数
+        'progress_scale': 60.0,
+        'stuck_speed_threshold': 1.0,  # m/s
+        'stuck_penalty': -0.08,
+        'crash_vehicle_penalty': -20,
+        'crash_wall_penalty': -8.0,   # Off-road / wall
+        'crash_line_penalty': -0.5,   # Yellow line crossing (lighter than wall)
+        'success_reward': 150.0,
+        'action_smoothness_scale': -0.005,
+        'team_alpha': 0.2,
     }
 }
 # === From Scenario/env.py ===

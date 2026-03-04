@@ -41,7 +41,9 @@ PYBIND11_MODULE(DRIVESIMX_ENV, m) {
         .def_readwrite("k_cl", &RewardConfig::k_cl)
         .def_readwrite("k_succ", &RewardConfig::k_succ)
         .def_readwrite("k_sm", &RewardConfig::k_sm)
-        .def_readwrite("alpha", &RewardConfig::alpha);
+        .def_readwrite("alpha", &RewardConfig::alpha)
+        .def_readwrite("alpha_shaping", &RewardConfig::alpha_shaping)
+        .def_readwrite("alpha_terminal", &RewardConfig::alpha_terminal);
 
     py::class_<StepResult>(m, "StepResult")
         .def(py::init<>())
@@ -139,5 +141,4 @@ PYBIND11_MODULE(DRIVESIMX_ENV, m) {
         .def_readwrite("distances", &Lidar::distances)
         .def_readwrite("rel_angles", &Lidar::rel_angles)
         .def("normalized", &Lidar::normalized);
-    
 }
